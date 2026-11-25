@@ -1,0 +1,6 @@
+{
+  "name": "Vanguard Fleet — Car & Bus Travel Booking Platform",
+  "description": "Direct-owned car, SUV, Tempo Traveller, and luxury bus travel booking platform with real-time fleet availability, route mapping, Razorpay payments, and full admin operations.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
