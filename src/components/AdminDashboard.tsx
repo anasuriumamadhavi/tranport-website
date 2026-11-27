@@ -13,6 +13,7 @@ import {
   Edit3,
   LayoutDashboard,
   MessageSquare,
+  Package,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -31,9 +32,11 @@ import {
   GalleryCategory,
   GalleryItem,
   HeroSlide,
+  PackageType,
   PaymentRecord,
   PricingConfig,
   ServiceStatus,
+  TravelPackage,
   TravelService,
   TripType,
   Vehicle,
@@ -57,6 +60,7 @@ type AdminTab =
   | 'fleet'
   | 'services'
   | 'destinations'
+  | 'packages'
   | 'gallery'
   | 'bookings'
   | 'drivers'
@@ -187,6 +191,24 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [dstFeatured, setDstFeatured] = useState(true);
   const [uploadingDestImg, setUploadingDestImg] = useState(false);
 
+  // Travel Packages state
+  const [adminPackages, setAdminPackages] = useState<TravelPackage[]>([]);
+  const [pkgTitle, setPkgTitle] = useState('');
+  const [pkgSubtitle, setPkgSubtitle] = useState('');
+  const [pkgType, setPkgType] = useState<PackageType>('City & Sightseeing');
+  const [pkgDuration, setPkgDuration] = useState('1 Night / 2 Days');
+  const [pkgDistanceKm, setPkgDistanceKm] = useState(240);
+  const [pkgDropAddress, setPkgDropAddress] = useState('');
+  const [pkgCategory, setPkgCategory] = useState<VehicleCategory>('SUVs');
+  const [pkgTripType, setPkgTripType] = useState<TripType>('Round Trip');
+  const [pkgPassengers, setPkgPassengers] = useState(6);
+  const [pkgPrice, setPkgPrice] = useState(7500);
+  const [pkgUnitLabel, setPkgUnitLabel] = useState('AC SUV (up to 6 pax)');
+  const [pkgImageUrl, setPkgImageUrl] = useState('/src/assets/images/dest_araku_valley_1795613749816.jpg');
+  const [pkgHighlights, setPkgHighlights] = useState('');
+  const [pkgFeatured, setPkgFeatured] = useState(true);
+  const [uploadingPkgImg, setUploadingPkgImg] = useState(false);
+
   // Vehicle form state
   const [editingVehicle, setEditingVehicle] = useState<Vehicle | null>(null);
   const [showVehicleForm, setShowVehicleForm] = useState(false);
@@ -220,7 +242,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     setLoading(true);
     setError(null);
     try {
-      const [ov, veh, drv, bkg, prc, cst, pay, enq, rep, setRes, galRes, srvRes, dstRes] = await Promise.all([
+      const [ov, veh, drv, bkg, prc, cst, pay, enq, rep, setRes, galRes, srvRes, dstRes, pkgRes] = await Promise.all([
         apiFetch<{ kpis: AdminOverviewKpis }>('/api/admin/overview', {}, token),
         apiFetch<{ vehicles: Vehicle[] }>('/api/admin/vehicles', {}, token),
         apiFetch<{ drivers: Array<Driver & { tripCount?: number }> }>('/api/admin/drivers', {}, token),
@@ -234,6 +256,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         apiFetch<{ gallery: GalleryItem[] }>('/api/gallery', {}, token),
         apiFetch<{ services: TravelService[] }>('/api/admin/services', {}, token),
         apiFetch<{ destinations: FeaturedDestination[] }>('/api/admin/destinations', {}, token),
+        apiFetch<{ packages: TravelPackage[] }>('/api/admin/packages', {}, token),
       ]);
       setKpis(ov.kpis);
       setVehicles(veh.vehicles);
@@ -248,6 +271,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       setGalleryItems(galRes.gallery);
       setAdminServices(srvRes.services);
       setAdminDestinations(dstRes.destinations);
+      setAdminPackages(pkgRes.packages);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -872,9 +896,103 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     }
   };
 
+  const handleUploadPkgImage = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploadingPkgImg(true);
+    setError(null);
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result));
+        reader.onerror = () => reject(new Error('Failed to read image file'));
+        reader.readAsDataURL(file);
+      });
+      const res = await apiFetch<{ url: string }>(
+        '/api/admin/upload',
+        { method: 'POST', body: JSON.stringify({ dataUrl }) },
+        token
+      );
+      setPkgImageUrl(res.url);
+      setNotice('Package photo uploaded.');
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setUploadingPkgImg(false);
+    }
+  };
+
+  const handleAddPackage = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    try {
+      const highlightsArr = pkgHighlights
+        .split('\n')
+        .map((s) => s.trim())
+        .filter(Boolean);
+      await apiFetch(
+        '/api/admin/packages',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            title: pkgTitle,
+            subtitle: pkgSubtitle,
+            packageType: pkgType,
+            durationLabel: pkgDuration,
+            distanceKm: pkgDistanceKm,
+            dropAddress: pkgDropAddress || pkgTitle,
+            recommendedCategory: pkgCategory,
+            recommendedTripType: pkgTripType,
+            passengerCount: pkgPassengers,
+            packagePriceInr: pkgPrice,
+            priceUnitLabel: pkgUnitLabel,
+            imageUrl: pkgImageUrl,
+            itineraryHighlights: highlightsArr,
+            featured: pkgFeatured,
+            active: true,
+          }),
+        },
+        token
+      );
+      setPkgTitle('');
+      setPkgSubtitle('');
+      setPkgDropAddress('');
+      setPkgHighlights('');
+      setNotice('Travel package published.');
+      await loadAllAdminData();
+      onFleetUpdated();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
+  const handleTogglePackage = async (id: string, patch: { featured?: boolean; active?: boolean }) => {
+    setError(null);
+    try {
+      await apiFetch(`/api/admin/packages/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }, token);
+      await loadAllAdminData();
+      onFleetUpdated();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
+  const handleDeletePackage = async (id: string) => {
+    setError(null);
+    try {
+      await apiFetch(`/api/admin/packages/${id}`, { method: 'DELETE' }, token);
+      setNotice('Package removed.');
+      await loadAllAdminData();
+      onFleetUpdated();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
   const navItems: Array<{ id: AdminTab; label: string; icon: React.ReactNode }> = [
     { id: 'overview', label: 'Overview', icon: <LayoutDashboard className="w-4 h-4" /> },
     { id: 'fleet', label: 'Fleet', icon: <Bus className="w-4 h-4" /> },
+    { id: 'packages', label: 'Packages', icon: <Package className="w-4 h-4" /> },
     { id: 'services', label: 'Services & Upcoming', icon: <Briefcase className="w-4 h-4" /> },
     { id: 'destinations', label: 'Destinations', icon: <Compass className="w-4 h-4" /> },
     { id: 'gallery', label: 'Gallery', icon: <Camera className="w-4 h-4" /> },
@@ -2493,6 +2611,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
                       />
                     </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-600 mb-1">X (Twitter) Profile URL</label>
+                      <input
+                        type="url"
+                        placeholder="https://x.com/..."
+                        value={siteSettings.twitterUrl || ''}
+                        onChange={(e) => setSiteSettings({ ...siteSettings, twitterUrl: e.target.value })}
+                        className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
+                      />
+                    </div>
                   </div>
                 </div>
               </form>
@@ -2967,6 +3095,243 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         <button
                           type="button"
                           onClick={() => handleDeleteDestination(dest.id)}
+                          className="text-xs font-semibold text-red-600 hover:underline inline-flex items-center gap-1 cursor-pointer"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* TRAVEL PACKAGES TAB */}
+            {tab === 'packages' && (
+              <div className="space-y-5">
+                <form
+                  onSubmit={handleAddPackage}
+                  className="bg-white border border-slate-200 rounded-xl p-5 space-y-4"
+                >
+                  <div>
+                    <h2 className="text-base font-bold text-[#102A43]">Create Tour & Travel Package</h2>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Add city sightseeing, hill-station, or pilgrimage packages with fixed starting tariff and instant booking prefill.
+                    </p>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                    <div>
+                      <label className="block text-xs font-medium text-slate-600 mb-1">Package Title *</label>
+                      <input
+                        type="text"
+                        required
+                        value={pkgTitle}
+                        onChange={(e) => setPkgTitle(e.target.value)}
+                        placeholder="e.g. Araku Valley 2-Day Retreat"
+                        className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-600 mb-1">Route / Stops Summary *</label>
+                      <input
+                        type="text"
+                        required
+                        value={pkgSubtitle}
+                        onChange={(e) => setPkgSubtitle(e.target.value)}
+                        placeholder="Vizag → Borra Caves → Araku"
+                        className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-600 mb-1">Package Type</label>
+                      <select
+                        value={pkgType}
+                        onChange={(e) => setPkgType(e.target.value as PackageType)}
+                        className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white"
+                      >
+                        <option value="City & Sightseeing">City & Sightseeing</option>
+                        <option value="Hill Station & Nature">Hill Station & Nature</option>
+                        <option value="Pilgrimage Tour">Pilgrimage Tour</option>
+                        <option value="Weekend & Coastal">Weekend & Coastal</option>
+                        <option value="Corporate & Group">Corporate & Group</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-600 mb-1">Duration Label</label>
+                      <input
+                        type="text"
+                        value={pkgDuration}
+                        onChange={(e) => setPkgDuration(e.target.value)}
+                        placeholder="e.g. 1 Night / 2 Days"
+                        className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-600 mb-1">Starting Price (INR)</label>
+                      <input
+                        type="number"
+                        min={500}
+                        value={pkgPrice}
+                        onChange={(e) => setPkgPrice(Number(e.target.value))}
+                        className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg tabular-nums"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-600 mb-1">Vehicle Capacity Note</label>
+                      <input
+                        type="text"
+                        value={pkgUnitLabel}
+                        onChange={(e) => setPkgUnitLabel(e.target.value)}
+                        placeholder="AC SUV (up to 6 pax)"
+                        className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-600 mb-1">Recommended Fleet</label>
+                      <select
+                        value={pkgCategory}
+                        onChange={(e) => setPkgCategory(e.target.value as VehicleCategory)}
+                        className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white"
+                      >
+                        {ALL_CATEGORIES.map((c) => (
+                          <option key={c} value={c}>{c}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="block text-xs font-medium text-slate-600 mb-1">Distance (km)</label>
+                        <input
+                          type="number"
+                          min={20}
+                          value={pkgDistanceKm}
+                          onChange={(e) => setPkgDistanceKm(Number(e.target.value))}
+                          className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg tabular-nums"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-slate-600 mb-1">Passengers</label>
+                        <input
+                          type="number"
+                          min={1}
+                          max={55}
+                          value={pkgPassengers}
+                          onChange={(e) => setPkgPassengers(Number(e.target.value))}
+                          className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg tabular-nums"
+                        />
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-600 mb-1">Destination Address</label>
+                      <input
+                        type="text"
+                        value={pkgDropAddress}
+                        onChange={(e) => setPkgDropAddress(e.target.value)}
+                        placeholder="Primary drop / destination hub"
+                        className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-600 mb-1">Package Photo URL / Upload</label>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="text"
+                          value={pkgImageUrl}
+                          onChange={(e) => setPkgImageUrl(e.target.value)}
+                          className="flex-1 px-3 py-2 text-xs font-mono border border-slate-200 rounded-lg"
+                        />
+                        <label className="px-3 py-2 text-xs font-semibold bg-[#F5F7FA] hover:bg-slate-200 border border-slate-200 rounded-lg inline-flex items-center gap-1.5 cursor-pointer shrink-0">
+                          <Upload className="w-3.5 h-3.5" />
+                          {uploadingPkgImg ? '...' : 'Upload'}
+                          <input
+                            type="file"
+                            accept="image/png,image/jpeg,image/webp"
+                            onChange={handleUploadPkgImage}
+                            className="hidden"
+                          />
+                        </label>
+                      </div>
+                    </div>
+                    <div className="sm:col-span-2">
+                      <label className="block text-xs font-medium text-slate-600 mb-1">Itinerary Highlights (one per line)</label>
+                      <textarea
+                        rows={2}
+                        value={pkgHighlights}
+                        onChange={(e) => setPkgHighlights(e.target.value)}
+                        placeholder="Borra Caves morning exploration&#10;Coffee Museum & Tribal Village visit"
+                        className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+                    <label className="inline-flex items-center gap-2 text-xs font-semibold text-[#102A43] cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={pkgFeatured}
+                        onChange={(e) => setPkgFeatured(e.target.checked)}
+                        className="rounded border-slate-300"
+                      />
+                      Feature on Homepage Travel Packages Showcase
+                    </label>
+                    <button
+                      type="submit"
+                      className="px-5 py-2 text-xs font-semibold bg-[#2563EB] hover:bg-[#1d4ed8] text-white rounded-lg inline-flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      Publish Package
+                    </button>
+                  </div>
+                </form>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {adminPackages.map((pkg) => (
+                    <div key={pkg.id} className="bg-white border border-slate-200 rounded-xl overflow-hidden flex flex-col justify-between">
+                      <div>
+                        <div className="aspect-[16/10] bg-slate-100 overflow-hidden">
+                          <img
+                            src={pkg.imageUrl}
+                            alt={pkg.title}
+                            referrerPolicy="no-referrer"
+                            className="w-full h-full object-cover"
+                          />
+                        </div>
+                        <div className="p-4">
+                          <p className="text-[11px] font-semibold text-[#2563EB] tabular-nums">
+                            {pkg.packageType} · {pkg.durationLabel}
+                          </p>
+                          <p className="text-sm font-bold text-[#102A43] mt-0.5">{pkg.title}</p>
+                          <p className="text-xs font-semibold text-slate-600 mt-1 tabular-nums">
+                            {formatINR(pkg.packagePriceInr)} · {pkg.priceUnitLabel}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="px-4 py-2.5 border-t border-slate-100 flex items-center justify-between gap-2 bg-[#F5F7FA]">
+                        <div className="flex items-center gap-3 text-[11px]">
+                          <label className="inline-flex items-center gap-1 cursor-pointer font-semibold text-[#102A43]">
+                            <input
+                              type="checkbox"
+                              checked={pkg.featured}
+                              onChange={(e) => handleTogglePackage(pkg.id, { featured: e.target.checked })}
+                              className="rounded border-slate-300"
+                            />
+                            Featured
+                          </label>
+                          <label className="inline-flex items-center gap-1 cursor-pointer text-slate-600">
+                            <input
+                              type="checkbox"
+                              checked={pkg.active}
+                              onChange={(e) => handleTogglePackage(pkg.id, { active: e.target.checked })}
+                              className="rounded border-slate-300"
+                            />
+                            Visible
+                          </label>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleDeletePackage(pkg.id)}
                           className="text-xs font-semibold text-red-600 hover:underline inline-flex items-center gap-1 cursor-pointer"
                         >
                           <Trash2 className="w-3.5 h-3.5" />

@@ -1,6 +1,7 @@
 import React from 'react';
 import { WebsiteSettings } from '../types';
 import { ActivePage } from './Header';
+import { SocialMediaSymbols } from './SocialMediaSymbols';
 
 interface FooterProps {
   settings?: WebsiteSettings | null;
@@ -19,12 +20,6 @@ export const Footer: React.FC<FooterProps> = ({ settings, onNavigate }) => {
   const email = settings?.supportEmail || 'dispatch@vizagjagantravels.com';
   const address = settings?.businessAddress || 'Dwaraka Nagar Main Road, Visakhapatnam, AP 530016';
   const hours = settings?.workingHours || '24/7 Dispatch Desk';
-
-  const socials = [
-    { label: 'Facebook', url: settings?.facebookUrl },
-    { label: 'Instagram', url: settings?.instagramUrl },
-    { label: 'YouTube', url: settings?.youtubeUrl },
-  ].filter((s) => Boolean(s.url));
 
   return (
     <footer className="bg-[#102A43] text-slate-300 border-t border-slate-800">
@@ -54,21 +49,9 @@ export const Footer: React.FC<FooterProps> = ({ settings, onNavigate }) => {
             </div>
             <p className="text-sm text-slate-300 mt-3.5 leading-relaxed">{footerDesc}</p>
             <p className="text-xs text-slate-400 mt-4">{permitsLine}</p>
-            {socials.length > 0 && (
-              <div className="flex flex-wrap items-center gap-4 mt-4 text-xs">
-                {socials.map((s) => (
-                  <a
-                    key={s.label}
-                    href={s.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-slate-300 hover:text-white underline underline-offset-4"
-                  >
-                    {s.label}
-                  </a>
-                ))}
-              </div>
-            )}
+            <div className="mt-5">
+              <SocialMediaSymbols settings={settings} variant="dark" showTitle />
+            </div>
           </div>
 
           <div>
@@ -77,6 +60,11 @@ export const Footer: React.FC<FooterProps> = ({ settings, onNavigate }) => {
               <li>
                 <button type="button" onClick={() => onNavigate('fleet')} className="hover:text-white transition-colors">
                   Our Vehicles Directory
+                </button>
+              </li>
+              <li>
+                <button type="button" onClick={() => onNavigate('packages')} className="hover:text-white transition-colors">
+                  Tour & Travel Packages
                 </button>
               </li>
               <li>

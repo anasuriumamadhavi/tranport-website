@@ -3,6 +3,7 @@ import {
   ArrowLeft,
   ArrowRight,
   Calendar,
+  Car,
   CheckCircle2,
   CreditCard,
   Download,
@@ -22,6 +23,7 @@ import {
 import { apiFetch, formatINR } from '../lib/api';
 import { downloadBookingInvoicePdf } from '../lib/invoicePdf';
 import { PlaceAutocompleteInput, PlaceValue, RoutePreviewMap } from './MapsComponents';
+import { PassengerCountInput } from './PassengerCountInput';
 
 export interface BookingPrefill {
   category?: VehicleCategory | 'All';
@@ -156,6 +158,30 @@ export const BookingWizard: React.FC<BookingWizardProps> = ({
   );
   const [testCheckoutOrder, setTestCheckoutOrder] = useState<RazorpayOrderResponse | null>(null);
   const [verifyingPayment, setVerifyingPayment] = useState(false);
+
+  const [brokenImages, setBrokenImages] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
+    setPaymentOption((prev) => {
+      if (!allowOnlinePayment) return 'Pay Later';
+      return prev === 'Pay Later' ? 'Advance' : prev;
+    });
+  }, [allowOnlinePayment]);
+
+  useEffect(() => {
+    if (!prefill) return;
+    if (prefill.category) setCategory(prefill.category);
+    if (prefill.pickup) setPickup(prefill.pickup);
+    if (prefill.drop) setDrop(prefill.drop);
+    if (prefill.journeyDate) setJourneyDate(prefill.journeyDate);
+    if (prefill.journeyTime) setJourneyTime(prefill.journeyTime);
+    if (prefill.returnDate !== undefined) setReturnDate(prefill.returnDate);
+    if (typeof prefill.passengers === 'number') {
+      setPassengerCount(Math.min(55, Math.max(1, prefill.passengers)));
+    }
+    if (prefill.tripType) setTripType(prefill.tripType);
+    if (prefill.selectedVehicleId) setSelectedVehicleId(prefill.selectedVehicleId);
+  }, [prefill]);
 
   useEffect(() => {
     if (user) {
@@ -384,7 +410,7 @@ export const BookingWizard: React.FC<BookingWizardProps> = ({
       <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
         {/* Progress Stepper covering all 12 steps cleanly */}
         <div className="bg-white border border-slate-200 rounded-xl p-5 mb-6">
-          <div className="flex flex-wrap items-center justify-between gap-4">
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
             <div>
               <h1 className="text-2xl font-bold text-[#102A43]">Reserve Your Fleet Vehicle</h1>
               <p className="text-xs text-slate-500 mt-1">
@@ -393,7 +419,7 @@ export const BookingWizard: React.FC<BookingWizardProps> = ({
                   : '12-step verified booking · Live availability check · Direct dispatch confirmation'}
               </p>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               {[
                 { num: 1, title: '1–7. Trip & Route' },
                 { num: 2, title: '8–9. Select Vehicle' },
@@ -407,7 +433,7 @@ export const BookingWizard: React.FC<BookingWizardProps> = ({
                   onClick={() => {
                     if (s.num < stage) setStage(s.num as 1 | 2 | 3 | 4);
                   }}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-colors ${
+                  className={`px-3 py-2 rounded-lg text-xs font-semibold whitespace-nowrap transition-colors ${
                     stage === s.num
                       ? 'bg-[#102A43] text-white'
                       : stage > s.num
@@ -426,15 +452,16 @@ export const BookingWizard: React.FC<BookingWizardProps> = ({
         {stage === 1 && (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
             <div className="lg:col-span-7 bg-white border border-slate-200 rounded-xl p-6 space-y-5">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-end">
                 <div>
-                  <label className="block text-xs font-medium text-slate-600 mb-1.5">
+                  <label htmlFor="wizard-category" className="block text-xs font-medium text-slate-600 mb-1.5">
                     Step 1 · Vehicle Category
                   </label>
                   <select
+                    id="wizard-category"
                     value={category}
                     onChange={(e) => setCategory(e.target.value)}
-                    className="w-full px-3 py-2.5 text-sm bg-white border border-slate-200 rounded-lg text-[#102A43] focus:outline-none focus:ring-2 focus:ring-[#2563EB]/30"
+                    className="w-full min-h-[44px] px-3 py-2.5 text-sm bg-white border border-slate-200 rounded-lg text-[#102A43] focus:outline-none focus:ring-2 focus:ring-[#2563EB]/30 focus:border-[#2563EB]"
                   >
                     <option value="All">All Available Fleet Categories</option>
                     {categories.map((cat) => (
@@ -446,17 +473,18 @@ export const BookingWizard: React.FC<BookingWizardProps> = ({
                 </div>
 
                 <div>
-                  <label className="block text-xs font-medium text-slate-600 mb-1.5">
+                  <label htmlFor="wizard-trip-type" className="block text-xs font-medium text-slate-600 mb-1.5">
                     Step 7 · Trip Type
                   </label>
                   <select
+                    id="wizard-trip-type"
                     value={tripType}
                     onChange={(e) => setTripType(e.target.value as TripType)}
-                    className="w-full px-3 py-2.5 text-sm bg-white border border-slate-200 rounded-lg text-[#102A43] focus:outline-none focus:ring-2 focus:ring-[#2563EB]/30"
+                    className="w-full min-h-[44px] px-3 py-2.5 text-sm bg-white border border-slate-200 rounded-lg text-[#102A43] focus:outline-none focus:ring-2 focus:ring-[#2563EB]/30 focus:border-[#2563EB]"
                   >
                     <option value="One Way">One Way Outstation</option>
                     <option value="Round Trip">Round Trip</option>
-                    <option value="Local Rental">Local City Rental</option>
+                    <option value="Local Rental">Local City Package</option>
                     <option value="Airport Transfer">Airport Pickup & Drop</option>
                   </select>
                 </div>
@@ -481,52 +509,56 @@ export const BookingWizard: React.FC<BookingWizardProps> = ({
                 />
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-end">
                 <div>
-                  <label className="block text-xs font-medium text-slate-600 mb-1.5">
+                  <label htmlFor="wizard-date" className="block text-xs font-medium text-slate-600 mb-1.5">
                     Step 4 · Pickup Date
                   </label>
                   <input
+                    id="wizard-date"
                     type="date"
                     min={today}
                     value={journeyDate}
                     onChange={(e) => setJourneyDate(e.target.value)}
-                    className="w-full px-3 py-2.5 text-sm border border-slate-200 rounded-lg text-[#102A43]"
+                    className="w-full min-h-[44px] px-3 py-2.5 text-sm bg-white border border-slate-200 rounded-lg text-[#102A43] focus:outline-none focus:ring-2 focus:ring-[#2563EB]/30 focus:border-[#2563EB]"
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-slate-600 mb-1.5">
+                  <label htmlFor="wizard-time" className="block text-xs font-medium text-slate-600 mb-1.5">
                     Pickup Time
                   </label>
                   <input
+                    id="wizard-time"
                     type="time"
                     value={journeyTime}
                     onChange={(e) => setJourneyTime(e.target.value)}
-                    className="w-full px-3 py-2.5 text-sm border border-slate-200 rounded-lg text-[#102A43]"
+                    className="w-full min-h-[44px] px-3 py-2.5 text-sm bg-white border border-slate-200 rounded-lg text-[#102A43] focus:outline-none focus:ring-2 focus:ring-[#2563EB]/30 focus:border-[#2563EB]"
                   />
                 </div>
                 {tripType === 'Round Trip' ? (
                   <div>
-                    <label className="block text-xs font-medium text-slate-600 mb-1.5">
+                    <label htmlFor="wizard-return-date" className="block text-xs font-medium text-slate-600 mb-1.5">
                       Step 5 · Return Date
                     </label>
                     <input
+                      id="wizard-return-date"
                       type="date"
                       min={journeyDate || today}
                       value={returnDate || journeyDate}
                       onChange={(e) => setReturnDate(e.target.value)}
-                      className="w-full px-3 py-2.5 text-sm border border-slate-200 rounded-lg text-[#102A43]"
+                      className="w-full min-h-[44px] px-3 py-2.5 text-sm bg-white border border-slate-200 rounded-lg text-[#102A43] focus:outline-none focus:ring-2 focus:ring-[#2563EB]/30 focus:border-[#2563EB]"
                     />
                   </div>
                 ) : tripType === 'Local Rental' ? (
                   <div>
-                    <label className="block text-xs font-medium text-slate-600 mb-1.5">
-                      Local Package
+                    <label htmlFor="wizard-local-pkg" className="block text-xs font-medium text-slate-600 mb-1.5">
+                      Step 5 · Local Package
                     </label>
                     <select
+                      id="wizard-local-pkg"
                       value={localHours}
                       onChange={(e) => setLocalHours(Number(e.target.value))}
-                      className="w-full px-3 py-2.5 text-sm border border-slate-200 rounded-lg text-[#102A43]"
+                      className="w-full min-h-[44px] px-3 py-2.5 text-sm bg-white border border-slate-200 rounded-lg text-[#102A43] focus:outline-none focus:ring-2 focus:ring-[#2563EB]/30 focus:border-[#2563EB]"
                     >
                       <option value={4}>Half-Day (4 hrs / 40 km)</option>
                       <option value={8}>Full-Day (8 hrs / 80 km)</option>
@@ -534,31 +566,27 @@ export const BookingWizard: React.FC<BookingWizardProps> = ({
                   </div>
                 ) : (
                   <div>
-                    <label className="block text-xs font-medium text-slate-600 mb-1.5">
+                    <label htmlFor="wizard-return-na" className="block text-xs font-medium text-slate-600 mb-1.5">
                       Step 5 · Return Date
                     </label>
                     <input
+                      id="wizard-return-na"
                       type="text"
                       disabled
                       value="Not required"
-                      className="w-full px-3 py-2.5 text-sm border border-slate-100 bg-[#F5F7FA] rounded-lg text-slate-400"
+                      className="w-full min-h-[44px] px-3 py-2.5 text-sm border border-slate-200/80 bg-[#F5F7FA] rounded-lg text-slate-400"
                     />
                   </div>
                 )}
 
-                <div>
-                  <label className="block text-xs font-medium text-slate-600 mb-1.5">
-                    Step 6 · Passengers
-                  </label>
-                  <input
-                    type="number"
-                    min={1}
-                    max={55}
-                    value={passengerCount}
-                    onChange={(e) => setPassengerCount(Math.max(1, Number(e.target.value)))}
-                    className="w-full px-3 py-2.5 text-sm border border-slate-200 rounded-lg text-[#102A43] tabular-nums"
-                  />
-                </div>
+                <PassengerCountInput
+                  id="wizard-passengers"
+                  label="Step 6 · Number of Passengers"
+                  value={passengerCount}
+                  onChange={setPassengerCount}
+                  min={1}
+                  max={55}
+                />
               </div>
 
               {availabilityError && (
@@ -572,7 +600,7 @@ export const BookingWizard: React.FC<BookingWizardProps> = ({
                   type="button"
                   onClick={fetchAvailableVehicles}
                   disabled={loadingVehicles}
-                  className="px-6 py-3 bg-[#102A43] hover:bg-[#1a3c5e] text-white text-sm font-semibold rounded-lg flex items-center gap-2 cursor-pointer disabled:opacity-60"
+                  className="w-full sm:w-auto min-h-[44px] px-6 py-3 bg-[#102A43] hover:bg-[#1a3c5e] text-white text-sm font-semibold rounded-lg flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60 transition-colors"
                 >
                   {loadingVehicles ? 'Checking Fleet Availability...' : 'Check Available Vehicles'}
                   <ArrowRight className="w-4 h-4" />
@@ -658,13 +686,21 @@ export const BookingWizard: React.FC<BookingWizardProps> = ({
                       v.isAvailableForDates ? 'border-slate-200' : 'border-red-200 opacity-75'
                     }`}
                   >
-                    <div className="aspect-[4/3] bg-[#F5F7FA]">
-                      <img
-                        src={v.images[0]}
-                        alt={v.name}
-                        referrerPolicy="no-referrer"
-                        className="w-full h-full object-cover"
-                      />
+                    <div className="aspect-[4/3] bg-[#F5F7FA] overflow-hidden">
+                      {v.images?.[0] && !brokenImages[v.id] ? (
+                        <img
+                          src={v.images[0]}
+                          alt={v.name}
+                          referrerPolicy="no-referrer"
+                          onError={() => setBrokenImages((prev) => ({ ...prev, [v.id]: true }))}
+                          className="w-full h-full object-cover"
+                        />
+                      ) : (
+                        <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-[#F5F7FA] to-slate-200 text-[#102A43] p-4 text-center">
+                          <Car className="w-9 h-9 text-[#2563EB] mb-2" />
+                          <span className="text-xs font-semibold">{v.name}</span>
+                        </div>
+                      )}
                     </div>
                     <div className="p-5 flex-1 flex flex-col justify-between gap-4">
                       <div>

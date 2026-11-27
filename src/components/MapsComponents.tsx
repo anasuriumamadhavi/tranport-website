@@ -9,7 +9,10 @@ import {
 } from '@vis.gl/react-google-maps';
 import { MapPin, Navigation } from 'lucide-react';
 
-const MAPS_API_KEY = (import.meta.env.VITE_GOOGLE_MAPS_API_KEY as string | undefined) || '';
+const MAPS_API_KEY = (import.meta.env.VITE_GOOGLE_MAPS_API_KEY as string | undefined)?.trim() || '';
+const MAPS_MAP_ID =
+  (import.meta.env.VITE_GOOGLE_MAPS_MAP_ID as string | undefined)?.trim() || 'DEMO_MAP_ID';
+const MAPS_LIBRARIES = ['marker', 'places', 'routes'];
 
 export interface PlaceValue {
   address: string;
@@ -75,7 +78,13 @@ export const MapsProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return <>{children}</>;
   }
   return (
-    <APIProvider apiKey={MAPS_API_KEY} language="en" region="IN">
+    <APIProvider
+      apiKey={MAPS_API_KEY}
+      version="weekly"
+      libraries={MAPS_LIBRARIES}
+      language="en"
+      region="IN"
+    >
       {children}
     </APIProvider>
   );
@@ -91,7 +100,9 @@ interface PlaceAutocompleteInputProps {
   iconType?: 'pickup' | 'drop';
 }
 
-export const PlaceAutocompleteInput: React.FC<PlaceAutocompleteInputProps> = ({
+const PlaceAutocompleteField: React.FC<
+  PlaceAutocompleteInputProps & { placesLib: PlacesLibraryShape | null }
+> = ({
   id,
   label,
   placeholder,
@@ -99,8 +110,8 @@ export const PlaceAutocompleteInput: React.FC<PlaceAutocompleteInputProps> = ({
   onChange,
   className = '',
   iconType = 'pickup',
+  placesLib,
 }) => {
-  const placesLib = (MAPS_API_KEY ? useMapsLibrary('places') : null) as PlacesLibraryShape | null;
   const sessionTokenRef = useRef<unknown>(null);
   const [suggestions, setSuggestions] = useState<AutocompleteSuggestionItem[]>([]);
   const [open, setOpen] = useState(false);
@@ -215,7 +226,7 @@ export const PlaceAutocompleteInput: React.FC<PlaceAutocompleteInputProps> = ({
           }}
           placeholder={placeholder}
           autoComplete="off"
-          className="w-full pl-9 pr-3 py-2.5 text-sm bg-white border border-slate-200 rounded-lg text-[#102A43] placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#2563EB]/30 focus:border-[#2563EB] transition-colors"
+          className="w-full min-h-[44px] pl-9 pr-3 py-2.5 text-sm bg-white border border-slate-200 rounded-lg text-[#102A43] placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#2563EB]/30 focus:border-[#2563EB] transition-colors"
         />
       </div>
 
@@ -260,20 +271,202 @@ export const PlaceAutocompleteInput: React.FC<PlaceAutocompleteInputProps> = ({
   );
 };
 
+const PlaceAutocompleteWithMaps: React.FC<PlaceAutocompleteInputProps> = (props) => {
+  const placesLib = useMapsLibrary('places') as PlacesLibraryShape | null;
+  return <PlaceAutocompleteField {...props} placesLib={placesLib} />;
+};
+
+export const PlaceAutocompleteInput: React.FC<PlaceAutocompleteInputProps> = (props) => {
+  if (!MAPS_API_KEY) {
+    return <PlaceAutocompleteField {...props} placesLib={null} />;
+  }
+  return <PlaceAutocompleteWithMaps {...props} />;
+};
+
+function useAdvancedMarkersSupport(): 'pending' | 'supported' | 'unsupported' {
+  const map = useMap();
+  const [support, setSupport] = useState<'pending' | 'supported' | 'unsupported'>('pending');
+
+  useEffect(() => {
+    if (!map) {
+      setSupport('pending');
+      return;
+    }
+
+    type MapWithCaps = {
+      getMapCapabilities?: () => { isAdvancedMarkersAvailable?: boolean };
+      addListener?: (eventName: string, handler: () => void) => { remove: () => void };
+    };
+    const capMap = map as unknown as MapWithCaps;
+
+    const isAvailable = () => Boolean(capMap.getMapCapabilities?.()?.isAdvancedMarkersAvailable);
+
+    if (isAvailable()) {
+      setSupport('supported');
+      return;
+    }
+
+    const listener = capMap.addListener?.('mapcapabilities_changed', () => {
+      setSupport(isAvailable() ? 'supported' : 'unsupported');
+    });
+
+    const timer = setTimeout(() => {
+      setSupport((prev) => (prev === 'pending' ? (isAvailable() ? 'supported' : 'unsupported') : prev));
+    }, 2500);
+
+    return () => {
+      listener?.remove();
+      clearTimeout(timer);
+    };
+  }, [map]);
+
+  return support;
+}
+
+interface SmartMarkerProps {
+  position: { lat: number; lng: number };
+  title: string;
+  background: string;
+  borderColor: string;
+  glyphColor: string;
+  markerSupport: 'pending' | 'supported' | 'unsupported';
+}
+
+const OverlayHtmlPin: React.FC<Omit<SmartMarkerProps, 'markerSupport' | 'glyphColor'>> = ({
+  position,
+  title,
+  background,
+  borderColor,
+}) => {
+  const map = useMap();
+
+  useEffect(() => {
+    if (!map) return;
+    type GoogleOverlayConstructor = new () => {
+      setMap: (m: unknown) => void;
+      getPanes: () => { overlayMouseTarget?: HTMLElement } | null;
+      getProjection: () => { fromLatLngToDivPixel: (latLng: unknown) => { x: number; y: number } | null } | null;
+      onAdd?(): void;
+      draw?(): void;
+      onRemove?(): void;
+    };
+    type GoogleLatLngConstructor = new (lat: number, lng: number) => unknown;
+
+    const gMaps = (window as unknown as {
+      google?: { maps?: { OverlayView?: GoogleOverlayConstructor; LatLng?: GoogleLatLngConstructor } };
+    }).google?.maps;
+
+    if (!gMaps?.OverlayView || !gMaps?.LatLng) return;
+
+    const OverlayViewBase = gMaps.OverlayView;
+    const LatLngClass = gMaps.LatLng;
+    let div: HTMLDivElement | null = null;
+
+    class PinOverlay extends OverlayViewBase {
+      onAdd() {
+        div = document.createElement('div');
+        div.title = title;
+        div.style.position = 'absolute';
+        div.style.transform = 'translate(-50%, -100%)';
+        div.style.cursor = 'pointer';
+
+        const badge = document.createElement('div');
+        badge.style.width = '24px';
+        badge.style.height = '24px';
+        badge.style.borderRadius = '9999px 9999px 9999px 0';
+        badge.style.transform = 'rotate(-45deg)';
+        badge.style.background = background;
+        badge.style.border = `2px solid ${borderColor}`;
+        badge.style.boxShadow = '0 2px 6px rgba(16,42,67,0.35)';
+        badge.style.display = 'flex';
+        badge.style.alignItems = 'center';
+        badge.style.justifyContent = 'center';
+
+        const dot = document.createElement('span');
+        dot.style.width = '8px';
+        dot.style.height = '8px';
+        dot.style.borderRadius = '9999px';
+        dot.style.background = '#ffffff';
+
+        badge.appendChild(dot);
+        div.appendChild(badge);
+        this.getPanes()?.overlayMouseTarget?.appendChild(div);
+      }
+      draw() {
+        if (!div) return;
+        const proj = this.getProjection();
+        const pt = proj?.fromLatLngToDivPixel(new LatLngClass(position.lat, position.lng));
+        if (pt) {
+          div.style.left = `${pt.x}px`;
+          div.style.top = `${pt.y}px`;
+        }
+      }
+      onRemove() {
+        div?.remove();
+        div = null;
+      }
+    }
+
+    const overlay = new PinOverlay();
+    overlay.setMap(map);
+    return () => {
+      overlay.setMap(null);
+    };
+  }, [map, position.lat, position.lng, title, background, borderColor]);
+
+  return null;
+};
+
+const SmartMarker: React.FC<SmartMarkerProps> = ({
+  position,
+  title,
+  background,
+  borderColor,
+  glyphColor,
+  markerSupport,
+}) => {
+  if (markerSupport === 'pending') {
+    return null;
+  }
+  if (markerSupport === 'unsupported') {
+    return (
+      <OverlayHtmlPin
+        position={position}
+        title={title}
+        background={background}
+        borderColor={borderColor}
+      />
+    );
+  }
+  return (
+    <AdvancedMarker position={position} title={title}>
+      <Pin background={background} borderColor={borderColor} glyphColor={glyphColor} />
+    </AdvancedMarker>
+  );
+};
+
 interface RouteOverlayProps {
   origin: PlaceValue;
   destination: PlaceValue;
   onRouteCalculated?: (info: { distanceKm: number; durationText: string }) => void;
+  showMarkers?: boolean;
 }
 
 const RouteOverlay: React.FC<RouteOverlayProps> = ({
   origin,
   destination,
   onRouteCalculated,
+  showMarkers = false,
 }) => {
   const map = useMap();
   const routesLib = useMapsLibrary('routes');
   const polylinesRef = useRef<MapPolyline[]>([]);
+  const onRouteCalculatedRef = useRef(onRouteCalculated);
+  const markerSupport = useAdvancedMarkersSupport();
+
+  useEffect(() => {
+    onRouteCalculatedRef.current = onRouteCalculated;
+  }, [onRouteCalculated]);
 
   useEffect(() => {
     if (!routesLib || !map || !origin.address || !destination.address) return;
@@ -331,7 +524,7 @@ const RouteOverlay: React.FC<RouteOverlayProps> = ({
         const hrs = Math.floor(mins / 60);
         const remMins = mins % 60;
         const durationText = hrs > 0 ? `${hrs} hr${hrs > 1 ? 's' : ''} ${remMins} mins` : `${remMins} mins`;
-        onRouteCalculated?.({ distanceKm, durationText });
+        onRouteCalculatedRef.current?.({ distanceKm, durationText });
       })
       .catch((err: unknown) => {
         checkQuotaError(err);
@@ -344,7 +537,32 @@ const RouteOverlay: React.FC<RouteOverlayProps> = ({
     };
   }, [routesLib, map, origin.address, origin.lat, origin.lng, destination.address, destination.lat, destination.lng]);
 
-  return null;
+  if (!showMarkers) return null;
+
+  return (
+    <>
+      {typeof origin.lat === 'number' && typeof origin.lng === 'number' && (
+        <SmartMarker
+          position={{ lat: origin.lat, lng: origin.lng }}
+          title="Pickup"
+          background="#2563EB"
+          borderColor="#102A43"
+          glyphColor="#FFFFFF"
+          markerSupport={markerSupport}
+        />
+      )}
+      {typeof destination.lat === 'number' && typeof destination.lng === 'number' && (
+        <SmartMarker
+          position={{ lat: destination.lat, lng: destination.lng }}
+          title="Destination"
+          background="#F59E0B"
+          borderColor="#102A43"
+          glyphColor="#102A43"
+          markerSupport={markerSupport}
+        />
+      )}
+    </>
+  );
 };
 
 export const RoutePreviewMap: React.FC<{
@@ -355,7 +573,7 @@ export const RoutePreviewMap: React.FC<{
   const defaultCenter =
     typeof origin.lat === 'number' && typeof origin.lng === 'number'
       ? { lat: origin.lat, lng: origin.lng }
-      : { lat: 12.9716, lng: 77.5946 };
+      : { lat: 17.7212, lng: 83.2245 };
 
   if (!MAPS_API_KEY) {
     return (
@@ -372,7 +590,7 @@ export const RoutePreviewMap: React.FC<{
   return (
     <div className="w-full h-60 rounded-xl overflow-hidden border border-slate-200">
       <GoogleMap
-        mapId="DEMO_MAP_ID"
+        mapId={MAPS_MAP_ID}
         defaultCenter={defaultCenter}
         defaultZoom={8}
         gestureHandling="cooperative"
@@ -380,23 +598,39 @@ export const RoutePreviewMap: React.FC<{
         internalUsageAttributionIds={['gmp_mcp_codeassist_v1_aistudio']}
         style={{ width: '100%', height: '100%' }}
       >
-        {typeof origin.lat === 'number' && typeof origin.lng === 'number' && (
-          <AdvancedMarker position={{ lat: origin.lat, lng: origin.lng }} title="Pickup">
-            <Pin background="#2563EB" borderColor="#102A43" glyphColor="#FFFFFF" />
-          </AdvancedMarker>
-        )}
-        {typeof destination.lat === 'number' && typeof destination.lng === 'number' && (
-          <AdvancedMarker position={{ lat: destination.lat, lng: destination.lng }} title="Destination">
-            <Pin background="#F59E0B" borderColor="#102A43" glyphColor="#102A43" />
-          </AdvancedMarker>
-        )}
         <RouteOverlay
           origin={origin}
           destination={destination}
           onRouteCalculated={onRouteCalculated}
+          showMarkers
         />
       </GoogleMap>
     </div>
+  );
+};
+
+const DepotMarkerLayer: React.FC<{ lat: number; lng: number; companyName: string }> = ({
+  lat,
+  lng,
+  companyName,
+}) => {
+  const map = useMap();
+  const markerSupport = useAdvancedMarkersSupport();
+
+  useEffect(() => {
+    if (!map) return;
+    (map as unknown as { panTo: (pos: { lat: number; lng: number }) => void }).panTo({ lat, lng });
+  }, [map, lat, lng]);
+
+  return (
+    <SmartMarker
+      position={{ lat, lng }}
+      title={`${companyName} Central Hub`}
+      background="#102A43"
+      borderColor="#F59E0B"
+      glyphColor="#FFFFFF"
+      markerSupport={markerSupport}
+    />
   );
 };
 
@@ -426,16 +660,14 @@ export const DepotLocationMap: React.FC<{
   return (
     <div className="w-full h-72 rounded-xl overflow-hidden border border-slate-200">
       <GoogleMap
-        mapId="DEMO_MAP_ID"
-        center={depotPos}
+        mapId={MAPS_MAP_ID}
+        defaultCenter={depotPos}
         defaultZoom={14}
         gestureHandling="cooperative"
         internalUsageAttributionIds={['gmp_mcp_codeassist_v1_aistudio']}
         style={{ width: '100%', height: '100%' }}
       >
-        <AdvancedMarker position={depotPos} title={`${companyName} Central Hub`}>
-          <Pin background="#102A43" borderColor="#F59E0B" glyphColor="#FFFFFF" />
-        </AdvancedMarker>
+        <DepotMarkerLayer lat={lat} lng={lng} companyName={companyName} />
       </GoogleMap>
     </div>
   );

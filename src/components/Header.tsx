@@ -6,6 +6,7 @@ import { UserProfile, WebsiteSettings } from '../types';
 export type ActivePage =
   | 'home'
   | 'fleet'
+  | 'packages'
   | 'services'
   | 'destinations'
   | 'gallery'
@@ -84,6 +85,9 @@ export const Header: React.FC<HeaderProps> = ({
           </button>
           <button type="button" onClick={() => handleNav('fleet')} className={navLinkClass(activePage === 'fleet')}>
             Our Vehicles
+          </button>
+          <button type="button" onClick={() => handleNav('packages')} className={navLinkClass(activePage === 'packages')}>
+            Packages
           </button>
           <button type="button" onClick={() => handleNav('services')} className={navLinkClass(activePage === 'services')}>
             Services
@@ -173,6 +177,7 @@ export const Header: React.FC<HeaderProps> = ({
             {[
               { label: 'Home', page: 'home' as ActivePage },
               { label: 'Our Vehicles', page: 'fleet' as ActivePage },
+              { label: 'Packages', page: 'packages' as ActivePage },
               { label: 'Services', page: 'services' as ActivePage },
               { label: 'Destinations', page: 'destinations' as ActivePage },
               { label: 'Gallery', page: 'gallery' as ActivePage },

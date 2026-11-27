@@ -267,6 +267,7 @@ export interface WebsiteSettings {
   facebookUrl: string;
   instagramUrl: string;
   youtubeUrl: string;
+  twitterUrl?: string;
   updatedAt: string;
 }
 
@@ -332,4 +333,32 @@ export interface FeaturedDestination {
   createdAt: string;
 }
 
+export type PackageType =
+  | 'City & Sightseeing'
+  | 'Hill Station & Nature'
+  | 'Pilgrimage Tour'
+  | 'Weekend & Coastal'
+  | 'Corporate & Group';
 
+export interface TravelPackage {
+  id: string;
+  title: string;
+  subtitle: string;
+  packageType: PackageType;
+  durationLabel: string;
+  distanceKm: number;
+  dropAddress: string;
+  dropLat: number;
+  dropLng: number;
+  recommendedCategory: VehicleCategory;
+  recommendedTripType: TripType;
+  passengerCount: number;
+  packagePriceInr: number;
+  priceUnitLabel: string;
+  imageUrl: string;
+  inclusions: string[];
+  itineraryHighlights: string[];
+  featured: boolean;
+  active: boolean;
+  createdAt: string;
+}

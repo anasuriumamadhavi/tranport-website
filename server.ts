@@ -27,10 +27,12 @@ import {
   FleetGroup,
   GalleryCategory,
   GalleryItem,
+  PackageType,
   PaymentRecord,
   PricingConfig,
   Review,
   ServiceStatus,
+  TravelPackage,
   TravelService,
   TripType,
   Vehicle,
@@ -351,6 +353,17 @@ async function startServer() {
         return a.createdAt.localeCompare(b.createdAt);
       });
     res.json({ destinations: visible });
+  });
+
+  app.get('/api/packages', async (_req: Request, res: Response) => {
+    const packages = await db.getAll('packages');
+    const visible = packages
+      .filter((p) => p.active)
+      .sort((a, b) => {
+        if (Boolean(a.featured) !== Boolean(b.featured)) return a.featured ? -1 : 1;
+        return a.createdAt.localeCompare(b.createdAt);
+      });
+    res.json({ packages: visible });
   });
 
   app.post('/api/pricing/estimate', async (req: Request, res: Response) => {
@@ -1528,6 +1541,7 @@ async function startServer() {
       facebookUrl: sanitizeSocialUrl(raw.facebookUrl),
       instagramUrl: sanitizeSocialUrl(raw.instagramUrl),
       youtubeUrl: sanitizeSocialUrl(raw.youtubeUrl),
+      twitterUrl: sanitizeSocialUrl(raw.twitterUrl),
       updatedAt: new Date().toISOString(),
     };
 
@@ -1800,6 +1814,114 @@ async function startServer() {
     const deleted = await db.deleteOneById('destinations', id);
     if (!deleted) {
       res.status(404).json({ error: 'Destination not found' });
+      return;
+    }
+    res.json({ deleted: true });
+  });
+
+  // Travel Packages Management
+  app.get('/api/admin/packages', requireAdmin, async (_req: Request, res: Response) => {
+    const packages = await db.getAll('packages');
+    res.json({ packages: [...packages].sort((a, b) => a.createdAt.localeCompare(b.createdAt)) });
+  });
+
+  app.post('/api/admin/packages', requireAdmin, async (req: Request, res: Response) => {
+    const title = asString(req.body.title, 120);
+    const subtitle = asString(req.body.subtitle, 180) || 'Custom Visakhapatnam Fleet Itinerary';
+    const dropAddress = asString(req.body.dropAddress, 200) || title;
+    if (!title) {
+      res.status(400).json({ error: 'Package title is required.' });
+      return;
+    }
+
+    const allowedPackageTypes: PackageType[] = [
+      'City & Sightseeing',
+      'Hill Station & Nature',
+      'Pilgrimage Tour',
+      'Weekend & Coastal',
+      'Corporate & Group',
+    ];
+    const rawType = asString(req.body.packageType, 60) as PackageType;
+    const packageType: PackageType = allowedPackageTypes.includes(rawType) ? rawType : 'City & Sightseeing';
+
+    const allowedVehCats: VehicleCategory[] = [
+      'Cars',
+      'SUVs',
+      'Premium Cars',
+      'Tempo Travellers',
+      'Mini Buses',
+      'Luxury Buses',
+      'Large Passenger Buses',
+    ];
+    const rawCat = asString(req.body.recommendedCategory, 60) as VehicleCategory;
+    const recommendedCategory: VehicleCategory = allowedVehCats.includes(rawCat) ? rawCat : 'SUVs';
+
+    const allowedTrips: TripType[] = ['One Way', 'Round Trip', 'Local Rental', 'Airport Transfer'];
+    const rawTrip = asString(req.body.recommendedTripType, 30) as TripType;
+    const recommendedTripType: TripType = allowedTrips.includes(rawTrip) ? rawTrip : 'Round Trip';
+
+    const inclusions = Array.isArray(req.body.inclusions)
+      ? req.body.inclusions.map((i: unknown) => asString(i, 160)).filter(Boolean).slice(0, 6)
+      : [];
+    const itineraryHighlights = Array.isArray(req.body.itineraryHighlights)
+      ? req.body.itineraryHighlights.map((h: unknown) => asString(h, 160)).filter(Boolean).slice(0, 6)
+      : [];
+
+    const pkg: TravelPackage = {
+      id: `pkg-${Date.now()}`,
+      title,
+      subtitle,
+      packageType,
+      durationLabel: asString(req.body.durationLabel, 60) || '1 Day Package',
+      distanceKm: Math.max(20, asNumber(req.body.distanceKm, 120)),
+      dropAddress,
+      dropLat: asNumber(req.body.dropLat, 17.7212),
+      dropLng: asNumber(req.body.dropLng, 83.2245),
+      recommendedCategory,
+      recommendedTripType,
+      passengerCount: Math.max(1, Math.min(55, asNumber(req.body.passengerCount, 4))),
+      packagePriceInr: Math.max(500, asNumber(req.body.packagePriceInr, 3500)),
+      priceUnitLabel: asString(req.body.priceUnitLabel, 80) || `${recommendedCategory} Package`,
+      imageUrl: sanitizeAssetUrl(req.body.imageUrl, '/src/assets/images/dest_araku_valley_1795613749816.jpg'),
+      inclusions: inclusions.length > 0 ? inclusions : ['Company-owned AC vehicle & verified chauffeur'],
+      itineraryHighlights: itineraryHighlights.length > 0 ? itineraryHighlights : [subtitle],
+      featured: req.body.featured !== false,
+      active: req.body.active !== false,
+      createdAt: new Date().toISOString(),
+    };
+
+    await db.insertOne('packages', pkg);
+    res.status(201).json({ package: pkg });
+  });
+
+  app.patch('/api/admin/packages/:id', requireAdmin, async (req: Request, res: Response) => {
+    const id = asString(req.params.id, 60);
+    const patch: Partial<TravelPackage> = {};
+    if (req.body.title) patch.title = asString(req.body.title, 120);
+    if (req.body.subtitle) patch.subtitle = asString(req.body.subtitle, 180);
+    if (req.body.durationLabel) patch.durationLabel = asString(req.body.durationLabel, 60);
+    if (typeof req.body.packagePriceInr !== 'undefined') {
+      patch.packagePriceInr = Math.max(500, asNumber(req.body.packagePriceInr, 3500));
+    }
+    if (typeof req.body.featured === 'boolean') patch.featured = req.body.featured;
+    if (typeof req.body.active === 'boolean') patch.active = req.body.active;
+    if (req.body.imageUrl) {
+      patch.imageUrl = sanitizeAssetUrl(req.body.imageUrl, '/src/assets/images/dest_araku_valley_1795613749816.jpg');
+    }
+
+    const updated = await db.updateOneById('packages', id, patch);
+    if (!updated) {
+      res.status(404).json({ error: 'Package not found' });
+      return;
+    }
+    res.json({ package: updated });
+  });
+
+  app.delete('/api/admin/packages/:id', requireAdmin, async (req: Request, res: Response) => {
+    const id = asString(req.params.id, 60);
+    const deleted = await db.deleteOneById('packages', id);
+    if (!deleted) {
+      res.status(404).json({ error: 'Package not found' });
       return;
     }
     res.json({ deleted: true });

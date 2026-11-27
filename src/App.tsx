@@ -18,6 +18,7 @@ import {
   GalleryItem,
   PricingConfig,
   Review,
+  TravelPackage,
   TravelService,
   TripType,
   UserProfile,
@@ -45,6 +46,9 @@ import {
   PlaceValue,
 } from './components/MapsComponents';
 import { WhatsAppWidget } from './components/WhatsAppWidget';
+import { PassengerCountInput } from './components/PassengerCountInput';
+import { PackagesPage } from './components/PackagesPage';
+import { SocialMediaSymbols } from './components/SocialMediaSymbols';
 
 interface CategorySummary {
   category: VehicleCategory;
@@ -146,6 +150,7 @@ export default function App() {
   const [galleryItems, setGalleryItems] = useState<GalleryItem[]>([]);
   const [servicesList, setServicesList] = useState<TravelService[]>([]);
   const [destinationsList, setDestinationsList] = useState<FeaturedDestination[]>([]);
+  const [packagesList, setPackagesList] = useState<TravelPackage[]>([]);
   const [galleryInitialCategory, setGalleryInitialCategory] = useState<GalleryCategory | 'All'>('All');
   const [settings, setSettings] = useState<WebsiteSettings | null>(null);
   const [loadingFleet, setLoadingFleet] = useState(true);
@@ -194,7 +199,7 @@ export default function App() {
   const loadPublicData = async () => {
     setLoadingFleet(true);
     try {
-      const [vehRes, catRes, prcRes, revRes, setRes, galRes, srvRes, dstRes] = await Promise.all([
+      const [vehRes, catRes, prcRes, revRes, setRes, galRes, srvRes, dstRes, pkgRes] = await Promise.all([
         apiFetch<{ vehicles: EnrichedVehicle[] }>('/api/vehicles'),
         apiFetch<{ categories: CategorySummary[] }>('/api/categories'),
         apiFetch<{ pricing: PricingConfig }>('/api/pricing'),
@@ -203,6 +208,7 @@ export default function App() {
         apiFetch<{ gallery: GalleryItem[] }>('/api/gallery'),
         apiFetch<{ services: TravelService[] }>('/api/services'),
         apiFetch<{ destinations: FeaturedDestination[] }>('/api/destinations'),
+        apiFetch<{ packages: TravelPackage[] }>('/api/packages'),
       ]);
       setVehicles(vehRes.vehicles);
       setCategories(catRes.categories);
@@ -212,6 +218,7 @@ export default function App() {
       setGalleryItems(galRes.gallery);
       setServicesList(srvRes.services);
       setDestinationsList(dstRes.destinations);
+      setPackagesList(pkgRes.packages);
       setHeroPickup((prev) =>
         prev.address === 'Visakhapatnam International Airport (VTZ), Vizag'
           ? {
@@ -434,7 +441,7 @@ export default function App() {
                                 min={today}
                                 value={heroDate}
                                 onChange={(e) => setHeroDate(e.target.value)}
-                                className="w-full px-3 py-2.5 text-sm border border-slate-200 rounded-lg text-[#102A43]"
+                                className="w-full min-h-[44px] px-3 py-2.5 text-sm bg-white border border-slate-200 rounded-lg text-[#102A43] focus:outline-none focus:ring-2 focus:ring-[#2563EB]/30 focus:border-[#2563EB]"
                               />
                             </div>
                             <div>
@@ -446,7 +453,7 @@ export default function App() {
                                 type="time"
                                 value={heroTime}
                                 onChange={(e) => setHeroTime(e.target.value)}
-                                className="w-full px-3 py-2.5 text-sm border border-slate-200 rounded-lg text-[#102A43]"
+                                className="w-full min-h-[44px] px-3 py-2.5 text-sm bg-white border border-slate-200 rounded-lg text-[#102A43] focus:outline-none focus:ring-2 focus:ring-[#2563EB]/30 focus:border-[#2563EB]"
                               />
                             </div>
                           </div>
@@ -460,9 +467,9 @@ export default function App() {
                                 id="hero-type"
                                 value={heroCategory}
                                 onChange={(e) => setHeroCategory(e.target.value)}
-                                className="w-full px-3 py-2.5 text-sm border border-slate-200 rounded-lg text-[#102A43]"
+                                className="w-full min-h-[44px] px-3 py-2.5 text-sm bg-white border border-slate-200 rounded-lg text-[#102A43] focus:outline-none focus:ring-2 focus:ring-[#2563EB]/30 focus:border-[#2563EB]"
                               >
-                                <option value="All">All Fleet (Cars & Buses)</option>
+                                <option value="All">All Available Vehicles</option>
                                 {activeCategoryNames.map((cat) => (
                                   <option key={cat} value={cat}>
                                     {cat}
@@ -470,23 +477,17 @@ export default function App() {
                                 ))}
                               </select>
                             </div>
-                            <div>
-                              <label htmlFor="hero-passengers" className="block text-xs font-medium text-slate-600 mb-1.5">
-                                Number of Passengers
-                              </label>
-                              <input
-                                id="hero-passengers"
-                                type="number"
-                                min={1}
-                                max={55}
-                                value={heroPassengers}
-                                onChange={(e) => setHeroPassengers(Math.max(1, Number(e.target.value)))}
-                                className="w-full px-3 py-2.5 text-sm border border-slate-200 rounded-lg text-[#102A43] tabular-nums"
-                              />
-                            </div>
+                            <PassengerCountInput
+                              id="hero-passengers"
+                              label="Number of Passengers"
+                              value={heroPassengers}
+                              onChange={setHeroPassengers}
+                              min={1}
+                              max={55}
+                            />
                             <button
                               type="submit"
-                              className="w-full py-2.5 px-5 bg-[#2563EB] hover:bg-[#1d4ed8] active:scale-[0.98] text-white text-sm font-semibold rounded-lg transition-all duration-150 cursor-pointer min-h-[44px]"
+                              className="w-full min-h-[44px] py-2.5 px-5 bg-[#2563EB] hover:bg-[#1d4ed8] active:scale-[0.98] text-white text-sm font-semibold rounded-lg transition-all duration-150 cursor-pointer"
                             >
                               Search Available Vehicles
                             </button>
@@ -769,6 +770,108 @@ export default function App() {
                 </div>
               </motion.section>
 
+              {/* Curated Travel & Tour Packages Showcase */}
+              {packagesList.length > 0 && (
+                <motion.section
+                  id="packages"
+                  initial={{ opacity: 0, y: 14 }}
+                  whileInView={{ opacity: 1, y: 0 }}
+                  viewport={{ once: true, amount: 0.1 }}
+                  transition={{ duration: 0.26, ease: [0.16, 1, 0.3, 1] }}
+                  className="py-16 bg-[#F5F7FA] border-t border-slate-200"
+                >
+                  <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                    <div className="flex flex-wrap items-end justify-between gap-4 mb-8">
+                      <div className="max-w-2xl">
+                        <h2 className="text-2xl sm:text-3xl font-bold text-[#102A43] tracking-tight">
+                          Curated Travel & Tour Packages
+                        </h2>
+                        <p className="text-sm text-slate-600 mt-1.5">
+                          Ready-to-book Vizag city sightseeing, Araku & Lambasingi getaways, and interstate temple tour packages with transparent starting fares.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleNavigate('packages')}
+                        className="px-4 py-2 text-xs font-semibold bg-white border border-slate-200 hover:bg-slate-50 active:scale-[0.98] text-[#102A43] rounded-lg whitespace-nowrap transition-all cursor-pointer"
+                      >
+                        Explore All Packages ({packagesList.length})
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
+                      {(packagesList.filter((p) => p.featured).length > 0
+                        ? packagesList.filter((p) => p.featured)
+                        : packagesList
+                      )
+                        .slice(0, 4)
+                        .map((pkg, idx) => (
+                          <motion.article
+                            key={pkg.id}
+                            initial={{ opacity: 0, y: 12 }}
+                            whileInView={{ opacity: 1, y: 0 }}
+                            viewport={{ once: true, amount: 0.12 }}
+                            transition={{ duration: 0.22, delay: Math.min(idx * 0.05, 0.2), ease: [0.16, 1, 0.3, 1] }}
+                            whileHover={{ y: -4 }}
+                            className="group bg-white border border-slate-200 rounded-xl overflow-hidden flex flex-col justify-between transition-shadow hover:shadow-md"
+                          >
+                            <div>
+                              <div className="aspect-[4/3] bg-slate-100 overflow-hidden">
+                                <img
+                                  src={pkg.imageUrl}
+                                  alt={pkg.title}
+                                  referrerPolicy="no-referrer"
+                                  className="w-full h-full object-cover transition-transform duration-300 ease-out group-hover:scale-[1.05]"
+                                />
+                              </div>
+                              <div className="p-4 space-y-1.5">
+                                <p className="text-[11px] font-semibold text-[#2563EB] tabular-nums">
+                                  {pkg.durationLabel} · Up to {pkg.passengerCount} Pax
+                                </p>
+                                <h3 className="text-base font-bold text-[#102A43] leading-snug">
+                                  {pkg.title}
+                                </h3>
+                                <p className="text-xs text-slate-600 line-clamp-2">{pkg.subtitle}</p>
+                              </div>
+                            </div>
+                            <div className="px-4 pb-4 pt-3 border-t border-slate-100 flex items-center justify-between gap-2">
+                              <div>
+                                <p className="text-[11px] text-slate-500">{pkg.recommendedCategory}</p>
+                                <p className="text-sm font-extrabold text-[#102A43] tabular-nums">
+                                  {formatINR(pkg.packagePriceInr)}
+                                </p>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setBookingPrefill({
+                                    category: pkg.recommendedCategory,
+                                    tripType: pkg.recommendedTripType,
+                                    pickup: heroPickup,
+                                    drop: {
+                                      address: pkg.dropAddress,
+                                      lat: pkg.dropLat,
+                                      lng: pkg.dropLng,
+                                    },
+                                    journeyDate: heroDate,
+                                    journeyTime: heroTime,
+                                    passengers: pkg.passengerCount,
+                                  });
+                                  setActivePage('booking');
+                                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                                }}
+                                className="py-2 px-3 bg-[#2563EB] hover:bg-[#1d4ed8] active:scale-[0.98] text-white text-xs font-semibold rounded-lg cursor-pointer transition-all duration-150 whitespace-nowrap"
+                              >
+                                Book Package
+                              </button>
+                            </div>
+                          </motion.article>
+                        ))}
+                    </div>
+                  </div>
+                </motion.section>
+              )}
+
               {/* Featured Destinations Showcase */}
               {destinationsList.length > 0 && (
                 <motion.section
@@ -1043,6 +1146,15 @@ export default function App() {
                             WhatsApp Desk
                           </a>
                         </div>
+                        <div className="p-4 bg-[#F5F7FA] rounded-xl border border-slate-200 sm:col-span-2 flex flex-wrap items-center justify-between gap-3">
+                          <div>
+                            <p className="text-xs font-semibold text-[#102A43]">Official Social Media Channels</p>
+                            <p className="text-[11px] text-slate-500 mt-0.5">
+                              Tap any symbol to follow updates, fleet reels, or message dispatch directly.
+                            </p>
+                          </div>
+                          <SocialMediaSymbols settings={settings} variant="light" />
+                        </div>
                       </div>
 
                       <DepotLocationMap
@@ -1241,6 +1353,32 @@ export default function App() {
                 )}
               </div>
             </section>
+          )}
+
+          {/* DEDICATED TRAVEL PACKAGES PAGE */}
+          {activePage === 'packages' && (
+            <PackagesPage
+              packages={packagesList}
+              settings={settings}
+              onBookPackage={(pkg) => {
+                setBookingPrefill({
+                  category: pkg.recommendedCategory,
+                  tripType: pkg.recommendedTripType,
+                  pickup: heroPickup,
+                  drop: {
+                    address: pkg.dropAddress,
+                    lat: pkg.dropLat,
+                    lng: pkg.dropLng,
+                  },
+                  journeyDate: heroDate,
+                  journeyTime: heroTime,
+                  passengers: pkg.passengerCount,
+                });
+                setActivePage('booking');
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }}
+              onContactDesk={() => handleNavigate('home', 'contact')}
+            />
           )}
 
           {/* DEDICATED SERVICES PAGE */}

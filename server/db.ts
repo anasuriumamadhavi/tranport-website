@@ -10,6 +10,7 @@ import {
   PaymentRecord,
   PricingConfig,
   Review,
+  TravelPackage,
   TravelService,
   UserProfile,
   Vehicle,
@@ -38,6 +39,7 @@ export interface DatabaseSchema {
   gallery: GalleryItem[];
   services: TravelService[];
   destinations: FeaturedDestination[];
+  packages: TravelPackage[];
   users: StoredUser[];
   pricing: PricingConfig;
   settings: WebsiteSettings;
@@ -733,9 +735,10 @@ export const SEED_SETTINGS: WebsiteSettings = {
   seoTitle: 'Vizag Jagan Travels — Car & Bus Travel Booking Platform',
   seoDescription:
     'Book direct-owned cars, SUVs, Tempo Travellers, mini buses, and luxury coaches with Vizag Jagan Travels for local city travel, airport transfers, outstation trips, weddings, and corporate charters.',
-  facebookUrl: '',
-  instagramUrl: '',
-  youtubeUrl: '',
+  facebookUrl: 'https://www.facebook.com/vizagjagantravels',
+  instagramUrl: 'https://www.instagram.com/vizagjagantravels',
+  youtubeUrl: 'https://www.youtube.com/@vizagjagantravels',
+  twitterUrl: 'https://x.com/vizagjagantravel',
   updatedAt: new Date().toISOString(),
 };
 
@@ -1321,6 +1324,189 @@ export const SEED_DESTINATIONS: FeaturedDestination[] = [
   },
 ];
 
+export const SEED_PACKAGES: TravelPackage[] = [
+  {
+    id: 'pkg-vizag-city',
+    title: 'Visakhapatnam Coastal & Heritage City Tour',
+    subtitle: 'RK Beach → Kailasagiri → Submarine Museum → Rushikonda → Simhachalam',
+    packageType: 'City & Sightseeing',
+    durationLabel: '8 Hours / 80 km',
+    distanceKm: 80,
+    dropAddress: 'Kailasagiri & RK Beach Coastal Circuit, Visakhapatnam',
+    dropLat: 17.7492,
+    dropLng: 83.3422,
+    recommendedCategory: 'Cars',
+    recommendedTripType: 'Local Rental',
+    passengerCount: 4,
+    packagePriceInr: 2400,
+    priceUnitLabel: 'AC Sedan (up to 4 pax)',
+    imageUrl: '/src/assets/images/fleet_executive_sedan_1795608170835.jpg',
+    inclusions: [
+      '8 hours / 80 km dedicated AC chauffeur-driven sedan',
+      'Fuel, chauffeur allowance, and doorstep hotel/VTZ pickup',
+      'Flexible sightseeing halts at coastal & museum landmarks',
+    ],
+    itineraryHighlights: [
+      'Morning Darshan at Simhachalam Temple',
+      'INS Kursura Submarine Museum & TU-142 Aircraft Museum',
+      'Kailasagiri Hilltop Ropeway & Rushikonda Sunset Point',
+    ],
+    featured: true,
+    active: true,
+    createdAt: '2026-11-01T08:00:00.000Z',
+  },
+  {
+    id: 'pkg-araku-2day',
+    title: 'Araku Valley & Borra Caves 2-Day Escape',
+    subtitle: 'Visakhapatnam → Tyda → Borra Caves → Padmapuram → Coffee Museum → Araku',
+    packageType: 'Hill Station & Nature',
+    durationLabel: '1 Night / 2 Days',
+    distanceKm: 245,
+    dropAddress: 'Araku Valley Hill Station, Visakhapatnam District',
+    dropLat: 18.3273,
+    dropLng: 82.8775,
+    recommendedCategory: 'SUVs',
+    recommendedTripType: 'Round Trip',
+    passengerCount: 6,
+    packagePriceInr: 7800,
+    priceUnitLabel: 'Innova Hycross / Crysta (up to 6 pax)',
+    imageUrl: '/src/assets/images/dest_araku_valley_1795613749816.jpg',
+    inclusions: [
+      'Round-trip AC Innova SUV with ghat-certified full-time chauffeur',
+      'Fuel & driver night bata for 2 full days',
+      'Direct pickup from VTZ Airport, Railway Station, or home',
+    ],
+    itineraryHighlights: [
+      'Ananthagiri Coffee Plantations & Galikonda Viewpoint',
+      'Million-year-old Borra Limestone Caves exploration',
+      'Padmapuram Botanical Gardens, Tribal Museum & Chaparai Falls',
+    ],
+    featured: true,
+    active: true,
+    createdAt: '2026-11-02T08:00:00.000Z',
+  },
+  {
+    id: 'pkg-lambasingi-sunrise',
+    title: 'Lambasingi Misty Hills & Vanjangi Dawn Package',
+    subtitle: 'Visakhapatnam → Narsipatnam → Vanjangi Cloud Peak → Lambasingi → Kothapalli Falls',
+    packageType: 'Hill Station & Nature',
+    durationLabel: '1 Night / 2 Days',
+    distanceKm: 260,
+    dropAddress: 'Lambasingi & Vanjangi Hills, Alluri Sitharama Raju District',
+    dropLat: 17.8195,
+    dropLng: 82.4912,
+    recommendedCategory: 'SUVs',
+    recommendedTripType: 'Round Trip',
+    passengerCount: 6,
+    packagePriceInr: 8400,
+    priceUnitLabel: '7-Seater AC SUV (up to 6 pax)',
+    imageUrl: '/src/assets/images/dest_lambasingi_hills_1795613750264.jpg',
+    inclusions: [
+      'Early 2:30 AM dawn dispatch for Vanjangi sunrise trek base',
+      '2 days SUV hire with experienced Eastern Ghats driver',
+      'Heated/AC cabin & spacious luggage rack for camping gear',
+    ],
+    itineraryHighlights: [
+      'Vanjangi Cloud Sea Sunrise Viewpoint arrival before dawn',
+      'Lambasingi Pepper & Coffee Estates winter mist drive',
+      'Kothapalli Waterfalls & Tajangi Reservoir stopover',
+    ],
+    featured: true,
+    active: true,
+    createdAt: '2026-11-03T08:00:00.000Z',
+  },
+  {
+    id: 'pkg-temple-circuit',
+    title: 'Simhachalam, Annavaram & Pithapuram Temple Circuit',
+    subtitle: 'Visakhapatnam → Simhachalam → Annavaram Satyanarayana Swamy → Pithapuram',
+    packageType: 'Pilgrimage Tour',
+    durationLabel: 'Full Day (14 Hours)',
+    distanceKm: 340,
+    dropAddress: 'Annavaram Sri Satyanarayana Swamy Temple, AP',
+    dropLat: 17.2836,
+    dropLng: 82.4044,
+    recommendedCategory: 'SUVs',
+    recommendedTripType: 'Round Trip',
+    passengerCount: 6,
+    packagePriceInr: 6200,
+    priceUnitLabel: 'AC SUV / Ertiga (up to 6 pax)',
+    imageUrl: '/src/assets/images/dest_coastal_temple_1795613751625.jpg',
+    inclusions: [
+      'Early 5:00 AM temple-timed pickup from anywhere in Vizag',
+      '340 km NH-16 round-trip highway allowance included',
+      'Patient waiting hours at temple complexes & prasad counters',
+    ],
+    itineraryHighlights: [
+      'Early morning Simhachalam Varaha Lakshmi Narasimha Darshan',
+      'Ratnagiri Hill Annavaram Sri Satyanarayana Swamy Temple',
+      'Pithapuram Kukkuteswara Swamy & Sripada Vallabha Peetham',
+    ],
+    featured: true,
+    active: true,
+    createdAt: '2026-11-04T08:00:00.000Z',
+  },
+  {
+    id: 'pkg-puri-konark-group',
+    title: 'Puri Jagannath, Chilika & Konark Group Package',
+    subtitle: 'Visakhapatnam → Chilika Lake → Puri Jagannath → Konark Sun Temple',
+    packageType: 'Weekend & Coastal',
+    durationLabel: '2 Nights / 3 Days',
+    distanceKm: 920,
+    dropAddress: 'Puri Jagannath Temple & Marine Drive, Odisha',
+    dropLat: 19.8049,
+    dropLng: 85.818,
+    recommendedCategory: 'Tempo Travellers',
+    recommendedTripType: 'Round Trip',
+    passengerCount: 14,
+    packagePriceInr: 22500,
+    priceUnitLabel: '17-Seater Pushback Tempo Traveller',
+    imageUrl: '/src/assets/images/fleet_tempo_traveller_1795608172563.jpg',
+    inclusions: [
+      '17-seater Force Urbania / Tempo Traveller with pushback seats',
+      '3 days highway dispatch with dual-experienced Odisha drivers',
+      'Dedicated overhead & rear boot storage for family baggage',
+    ],
+    itineraryHighlights: [
+      'Chilika Lake Barkul / Satapada dolphin boating point',
+      'Sri Jagannath Temple Darshan & Golden Sea Beach walk',
+      'UNESCO Konark Sun Temple & Chandrabhaga coastal drive',
+    ],
+    featured: false,
+    active: true,
+    createdAt: '2026-11-05T08:00:00.000Z',
+  },
+  {
+    id: 'pkg-tirupati-coach',
+    title: 'Tirupati Balaji & Srikalahasti Charter Coach',
+    subtitle: 'Visakhapatnam → Vijayawada → Tirumala Tirupati → Srikalahasti',
+    packageType: 'Corporate & Group',
+    durationLabel: '3 Nights / 4 Days',
+    distanceKm: 1560,
+    dropAddress: 'Tirupati Balaji & Alipiri Foothills, AP',
+    dropLat: 13.6288,
+    dropLng: 79.4192,
+    recommendedCategory: 'Luxury Buses',
+    recommendedTripType: 'Round Trip',
+    passengerCount: 35,
+    packagePriceInr: 48000,
+    priceUnitLabel: '35–45 Seater AC Luxury Coach',
+    imageUrl: '/src/assets/images/fleet_luxury_coach_1795608171806.jpg',
+    inclusions: [
+      'AC Volvo / BharatBenz reclining coach with PA system',
+      'Dual commercial drivers for safe overnight NH-16 travel',
+      '24/7 dispatch desk coordination for group halts',
+    ],
+    itineraryHighlights: [
+      'Kanaka Durga Temple Vijayawada en-route darshan stop',
+      'Tirupati Alipiri transfer, Tiruchanur Padmavathi Temple',
+      'Srikalahasti Vayu Linga shrine & Kapila Theertham visit',
+    ],
+    featured: false,
+    active: true,
+    createdAt: '2026-11-06T08:00:00.000Z',
+  },
+];
+
 function createDefaultDb(): DatabaseSchema {
   return {
     vehicles: structuredClone(SEED_VEHICLES),
@@ -1332,6 +1518,7 @@ function createDefaultDb(): DatabaseSchema {
     gallery: structuredClone(SEED_GALLERY),
     services: structuredClone(SEED_SERVICES),
     destinations: structuredClone(SEED_DESTINATIONS),
+    packages: structuredClone(SEED_PACKAGES),
     users: [],
     pricing: structuredClone(SEED_PRICING),
     settings: structuredClone(SEED_SETTINGS),
@@ -1352,8 +1539,10 @@ class HybridDatabase {
   }
 
   private async _initInternal(): Promise<void> {
-    const uri = process.env.MONGODB_URI?.trim();
-    if (uri) {
+    const uri = (process.env.MONGODB_URI?.trim() || '').replace(/^["']|["']$/g, '');
+    const isValidMongoUri =
+      uri.startsWith('mongodb://') || uri.startsWith('mongodb+srv://');
+    if (isValidMongoUri) {
       try {
         this.mongoClient = new MongoClient(uri);
         await this.mongoClient.connect();
@@ -1370,13 +1559,15 @@ class HybridDatabase {
           await this.mongoDb.collection('gallery').insertMany(seed.gallery);
           await this.mongoDb.collection('services').insertMany(seed.services);
           await this.mongoDb.collection('destinations').insertMany(seed.destinations);
+          await this.mongoDb.collection('packages').insertMany(seed.packages);
           await this.mongoDb.collection('pricing').insertOne({ id: 'default', ...seed.pricing });
           await this.mongoDb.collection('settings').insertOne({ id: 'default', ...seed.settings });
         } else {
-          const [galleryCount, serviceCount, destCount] = await Promise.all([
+          const [galleryCount, serviceCount, destCount, pkgCount] = await Promise.all([
             this.mongoDb.collection('gallery').countDocuments(),
             this.mongoDb.collection('services').countDocuments(),
             this.mongoDb.collection('destinations').countDocuments(),
+            this.mongoDb.collection('packages').countDocuments(),
           ]);
           if (galleryCount === 0) {
             await this.mongoDb.collection('gallery').insertMany(structuredClone(SEED_GALLERY));
@@ -1386,6 +1577,9 @@ class HybridDatabase {
           }
           if (destCount === 0) {
             await this.mongoDb.collection('destinations').insertMany(structuredClone(SEED_DESTINATIONS));
+          }
+          if (pkgCount === 0) {
+            await this.mongoDb.collection('packages').insertMany(structuredClone(SEED_PACKAGES));
           }
         }
         return;
@@ -1416,6 +1610,10 @@ class HybridDatabase {
       }
       if (!Array.isArray(this.localCache.destinations) || this.localCache.destinations.length === 0) {
         this.localCache.destinations = structuredClone(SEED_DESTINATIONS);
+        dirty = true;
+      }
+      if (!Array.isArray(this.localCache.packages) || this.localCache.packages.length === 0) {
+        this.localCache.packages = structuredClone(SEED_PACKAGES);
         dirty = true;
       }
       if (dirty) {
