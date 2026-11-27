@@ -46,7 +46,7 @@ export const WhatsAppWidget: React.FC<{ settings?: WebsiteSettings | null }> = (
   };
 
   return (
-    <div className="fixed bottom-4 right-4 z-40">
+    <div className="fixed bottom-20 right-4 lg:bottom-4 z-40">
       {open && (
         <div className="mb-3 w-80 sm:w-96 bg-white border border-slate-200 rounded-xl shadow-2xl overflow-hidden">
           <div className="bg-[#102A43] text-white px-4 py-3.5 flex items-center justify-between">

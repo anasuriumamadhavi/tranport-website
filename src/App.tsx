@@ -49,6 +49,7 @@ import { WhatsAppWidget } from './components/WhatsAppWidget';
 import { PassengerCountInput } from './components/PassengerCountInput';
 import { PackagesPage } from './components/PackagesPage';
 import { SocialMediaSymbols } from './components/SocialMediaSymbols';
+import { MobileBottomNav } from './components/MobileBottomNav';
 
 interface CategorySummary {
   category: VehicleCategory;
@@ -351,7 +352,7 @@ export default function App() {
   return (
     <MotionConfig reducedMotion="user">
       <MapsProvider>
-        <div className="min-h-screen flex flex-col bg-white text-[#102A43]">
+        <div className="min-h-screen flex flex-col bg-white text-[#102A43] pb-16 lg:pb-0">
           {quotaExceeded && (
             <div className="bg-amber-50 border-b border-amber-200 text-amber-900 px-4 py-2.5 text-xs md:text-sm text-center sticky top-0 z-50 shadow-sm">
               <span>
@@ -1525,6 +1526,11 @@ export default function App() {
         />
 
         <WhatsAppWidget settings={settings} />
+        <MobileBottomNav
+          activePage={activePage}
+          user={user}
+          onNavigate={(page) => handleNavigate(page)}
+        />
       </div>
     </MapsProvider>
   </MotionConfig>
