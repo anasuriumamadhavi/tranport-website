@@ -57,6 +57,12 @@ export const CustomerDashboard: React.FC<CustomerDashboardProps> = ({
   const [profilePhone, setProfilePhone] = useState(user?.phone || '');
   const [profileAddress, setProfileAddress] = useState(user?.address || '');
 
+  // Security & Recovery PIN form
+  const [newRecoveryPin, setNewRecoveryPin] = useState('');
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmNewPassword, setConfirmNewPassword] = useState('');
+
   // Support form
   const [supportSubject, setSupportSubject] = useState('');
   const [supportBookingCode, setSupportBookingCode] = useState('');
@@ -147,6 +153,48 @@ export const CustomerDashboard: React.FC<CustomerDashboardProps> = ({
       );
       onUpdateUser(res.user);
       setStatusMessage('Profile details updated.');
+    } catch (err) {
+      setStatusMessage((err as Error).message);
+    }
+  };
+
+  const handleSaveSecurity = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!token) return;
+    if (!newRecoveryPin.trim() && !newPassword) {
+      setStatusMessage('Enter a new Recovery PIN or a new password to update.');
+      return;
+    }
+    if (newRecoveryPin.trim() && newRecoveryPin.trim().length < 4) {
+      setStatusMessage('Recovery PIN must be at least 4 characters.');
+      return;
+    }
+    if (newPassword && newPassword.length < 6) {
+      setStatusMessage('New password must be at least 6 characters.');
+      return;
+    }
+    if (newPassword && newPassword !== confirmNewPassword) {
+      setStatusMessage('New password and confirmation do not match.');
+      return;
+    }
+    try {
+      const res = await apiFetch<{ user: UserProfile }>(
+        '/api/auth/profile',
+        {
+          method: 'PATCH',
+          body: JSON.stringify({
+            ...(newRecoveryPin.trim() ? { recoveryPin: newRecoveryPin.trim() } : {}),
+            ...(newPassword ? { currentPassword, newPassword } : {}),
+          }),
+        },
+        token
+      );
+      onUpdateUser(res.user);
+      setNewRecoveryPin('');
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmNewPassword('');
+      setStatusMessage('Account security & recovery settings updated.');
     } catch (err) {
       setStatusMessage((err as Error).message);
     }
@@ -444,48 +492,131 @@ export const CustomerDashboard: React.FC<CustomerDashboardProps> = ({
           )}
 
           {activeTab === 'profile' && (
-            <form onSubmit={handleSaveProfile} className="max-w-lg space-y-4">
-              <h2 className="text-base font-bold text-[#102A43]">Passenger Profile</h2>
-              {!user ? (
-                <p className="text-sm text-slate-500">Sign in to manage your saved profile details.</p>
-              ) : (
-                <>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+              <form onSubmit={handleSaveProfile} className="space-y-4">
+                <h2 className="text-base font-bold text-[#102A43]">Passenger Profile</h2>
+                {!user ? (
+                  <p className="text-sm text-slate-500">Sign in to manage your saved profile details.</p>
+                ) : (
+                  <>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-600 mb-1">Full Name</label>
+                      <input
+                        type="text"
+                        value={profileName}
+                        onChange={(e) => setProfileName(e.target.value)}
+                        className="w-full px-3.5 py-2.5 text-sm border border-slate-200 rounded-lg"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-600 mb-1">Mobile Number</label>
+                      <input
+                        type="tel"
+                        value={profilePhone}
+                        onChange={(e) => setProfilePhone(e.target.value)}
+                        className="w-full px-3.5 py-2.5 text-sm border border-slate-200 rounded-lg"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-600 mb-1">
+                        Default Pickup / Billing Address
+                      </label>
+                      <input
+                        type="text"
+                        value={profileAddress}
+                        onChange={(e) => setProfileAddress(e.target.value)}
+                        className="w-full px-3.5 py-2.5 text-sm border border-slate-200 rounded-lg"
+                      />
+                    </div>
+                    <button
+                      type="submit"
+                      className="px-5 py-2.5 bg-[#102A43] text-white text-sm font-semibold rounded-lg cursor-pointer"
+                    >
+                      Save Profile
+                    </button>
+                  </>
+                )}
+              </form>
+
+              {user && (
+                <form
+                  onSubmit={handleSaveSecurity}
+                  className="space-y-4 pt-6 lg:pt-0 lg:border-l lg:border-slate-100 lg:pl-8"
+                >
+                  <div className="flex items-center justify-between">
+                    <h2 className="text-base font-bold text-[#102A43]">Password & Recovery PIN</h2>
+                    <span
+                      className={`text-[11px] font-semibold px-2 py-0.5 rounded ${
+                        user.hasRecoveryPin
+                          ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+                          : 'bg-amber-50 text-amber-800 border border-amber-200'
+                      }`}
+                    >
+                      {user.hasRecoveryPin ? 'Recovery PIN Active' : 'No Recovery PIN'}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500">
+                    Set a Recovery PIN so you can reset your password instantly anytime using Forgot Password.
+                  </p>
                   <div>
-                    <label className="block text-xs font-medium text-slate-600 mb-1">Full Name</label>
+                    <label className="block text-xs font-medium text-slate-600 mb-1">
+                      {user.hasRecoveryPin ? 'Update Recovery PIN (4+ chars)' : 'Set Recovery PIN (4+ chars)'}
+                    </label>
                     <input
                       type="text"
-                      value={profileName}
-                      onChange={(e) => setProfileName(e.target.value)}
+                      maxLength={16}
+                      value={newRecoveryPin}
+                      onChange={(e) => setNewRecoveryPin(e.target.value)}
+                      placeholder="e.g. 4829"
                       className="w-full px-3.5 py-2.5 text-sm border border-slate-200 rounded-lg"
                     />
                   </div>
-                  <div>
-                    <label className="block text-xs font-medium text-slate-600 mb-1">Mobile Number</label>
-                    <input
-                      type="tel"
-                      value={profilePhone}
-                      onChange={(e) => setProfilePhone(e.target.value)}
-                      className="w-full px-3.5 py-2.5 text-sm border border-slate-200 rounded-lg"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium text-slate-600 mb-1">Default Pickup / Billing Address</label>
-                    <input
-                      type="text"
-                      value={profileAddress}
-                      onChange={(e) => setProfileAddress(e.target.value)}
-                      className="w-full px-3.5 py-2.5 text-sm border border-slate-200 rounded-lg"
-                    />
+                  <div className="pt-2 border-t border-slate-100 space-y-3">
+                    <p className="text-xs font-semibold text-[#102A43]">Change Account Password (Optional)</p>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-600 mb-1">Current Password</label>
+                      <input
+                        type="password"
+                        value={currentPassword}
+                        onChange={(e) => setCurrentPassword(e.target.value)}
+                        placeholder="Required when changing password"
+                        className="w-full px-3.5 py-2.5 text-sm border border-slate-200 rounded-lg"
+                      />
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-xs font-medium text-slate-600 mb-1">New Password</label>
+                        <input
+                          type="password"
+                          minLength={6}
+                          value={newPassword}
+                          onChange={(e) => setNewPassword(e.target.value)}
+                          placeholder="Min 6 chars"
+                          className="w-full px-3.5 py-2.5 text-sm border border-slate-200 rounded-lg"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-slate-600 mb-1">Confirm New Password</label>
+                        <input
+                          type="password"
+                          minLength={6}
+                          value={confirmNewPassword}
+                          onChange={(e) => setConfirmNewPassword(e.target.value)}
+                          placeholder="Repeat password"
+                          className="w-full px-3.5 py-2.5 text-sm border border-slate-200 rounded-lg"
+                        />
+                      </div>
+                    </div>
                   </div>
                   <button
                     type="submit"
-                    className="px-5 py-2.5 bg-[#102A43] text-white text-sm font-semibold rounded-lg cursor-pointer"
+                    className="px-5 py-2.5 bg-[#2563EB] hover:bg-[#1d4ed8] text-white text-sm font-semibold rounded-lg cursor-pointer"
                   >
-                    Save Profile
+                    Update Security Settings
                   </button>
-                </>
+                </form>
               )}
-            </form>
+            </div>
           )}
 
           {activeTab === 'support' && (

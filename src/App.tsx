@@ -1497,6 +1497,10 @@ export default function App() {
               onFleetUpdated={() => {
                 void loadPublicData();
               }}
+              onSessionUpdated={(newToken, updatedAdmin) => {
+                setToken(newToken);
+                setUser(updatedAdmin);
+              }}
             />
           )}
 

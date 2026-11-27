@@ -19,6 +19,9 @@ import {
 
 export interface StoredUser extends UserProfile {
   passwordHash: string;
+  recoveryPinHash?: string;
+  resetTokenHash?: string;
+  resetTokenExpiresAt?: string;
 }
 
 export interface AdminCredentialRecord {
@@ -26,7 +29,9 @@ export interface AdminCredentialRecord {
   email: string;
   name: string;
   passwordHash: string;
+  recoveryCodeHash?: string;
   createdAt: string;
+  updatedAt?: string;
 }
 
 export interface DatabaseSchema {

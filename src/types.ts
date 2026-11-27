@@ -205,6 +205,7 @@ export interface UserProfile {
   phone: string;
   address?: string;
   role: 'customer' | 'admin';
+  hasRecoveryPin?: boolean;
   createdAt: string;
 }
 

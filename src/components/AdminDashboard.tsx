@@ -7,10 +7,13 @@ import {
   Bus,
   CalendarCheck,
   Camera,
+  Check,
   Compass,
+  Copy,
   DollarSign,
   Download,
   Edit3,
+  KeyRound,
   LayoutDashboard,
   MessageSquare,
   Package,
@@ -18,6 +21,7 @@ import {
   RefreshCw,
   RotateCcw,
   Settings,
+  ShieldCheck,
   Trash2,
   Upload,
   UserCheck,
@@ -39,6 +43,7 @@ import {
   TravelPackage,
   TravelService,
   TripType,
+  UserProfile,
   Vehicle,
   VehicleCategory,
   WebsiteSettings,
@@ -53,6 +58,7 @@ import {
 interface AdminDashboardProps {
   token: string;
   onFleetUpdated: () => void;
+  onSessionUpdated?: (token: string, user: UserProfile) => void;
 }
 
 type AdminTab =
@@ -69,6 +75,7 @@ type AdminTab =
   | 'payments'
   | 'enquiries'
   | 'reports'
+  | 'credentials'
   | 'settings';
 
 interface AdminOverviewKpis {
@@ -91,6 +98,19 @@ interface CustomerRow {
   bookingsCount: number;
   totalSpent: number;
   lastTripDate: string;
+  isRegistered?: boolean;
+  hasRecoveryPin?: boolean;
+}
+
+interface AdminCredentialInfo {
+  id: string;
+  email: string;
+  name: string;
+  envPasscodeConfigured: boolean;
+  hasClaimedAdmin: boolean;
+  hasRecoveryKey: boolean;
+  createdAt: string;
+  updatedAt: string | null;
 }
 
 interface ReportsPayload {
@@ -129,6 +149,7 @@ const ALL_CATEGORIES: VehicleCategory[] = [
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   token,
   onFleetUpdated,
+  onSessionUpdated,
 }) => {
   const [tab, setTab] = useState<AdminTab>('overview');
   const [loading, setLoading] = useState(true);
@@ -238,11 +259,29 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [dExpYears, setDExpYears] = useState(6);
   const [dAvailable, setDAvailable] = useState(true);
 
+  // Admin Credentials & Customer Reset state
+  const [adminCredInfo, setAdminCredInfo] = useState<AdminCredentialInfo | null>(null);
+  const [credName, setCredName] = useState('');
+  const [credEmail, setCredEmail] = useState('');
+  const [credCurrentPassword, setCredCurrentPassword] = useState('');
+  const [credNewPassword, setCredNewPassword] = useState('');
+  const [credConfirmPassword, setCredConfirmPassword] = useState('');
+  const [savingCreds, setSavingCreds] = useState(false);
+  const [generatedAdminKey, setGeneratedAdminKey] = useState<string | null>(null);
+  const [copiedAdminKey, setCopiedAdminKey] = useState(false);
+  const [issuedCustomerReset, setIssuedCustomerReset] = useState<{
+    resetCode: string;
+    expiresAt: string;
+    customerName: string;
+    customerEmail: string;
+  } | null>(null);
+  const [copiedCustomerCode, setCopiedCustomerCode] = useState(false);
+
   const loadAllAdminData = async () => {
     setLoading(true);
     setError(null);
     try {
-      const [ov, veh, drv, bkg, prc, cst, pay, enq, rep, setRes, galRes, srvRes, dstRes, pkgRes] = await Promise.all([
+      const [ov, veh, drv, bkg, prc, cst, pay, enq, rep, setRes, galRes, srvRes, dstRes, pkgRes, credRes] = await Promise.all([
         apiFetch<{ kpis: AdminOverviewKpis }>('/api/admin/overview', {}, token),
         apiFetch<{ vehicles: Vehicle[] }>('/api/admin/vehicles', {}, token),
         apiFetch<{ drivers: Array<Driver & { tripCount?: number }> }>('/api/admin/drivers', {}, token),
@@ -257,6 +296,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         apiFetch<{ services: TravelService[] }>('/api/admin/services', {}, token),
         apiFetch<{ destinations: FeaturedDestination[] }>('/api/admin/destinations', {}, token),
         apiFetch<{ packages: TravelPackage[] }>('/api/admin/packages', {}, token),
+        apiFetch<{ credentials: AdminCredentialInfo }>('/api/auth/admin/credentials', {}, token),
       ]);
       setKpis(ov.kpis);
       setVehicles(veh.vehicles);
@@ -272,6 +312,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       setAdminServices(srvRes.services);
       setAdminDestinations(dstRes.destinations);
       setAdminPackages(pkgRes.packages);
+      setAdminCredInfo(credRes.credentials);
+      setCredName(credRes.credentials.name);
+      setCredEmail(credRes.credentials.email);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -282,6 +325,106 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   useEffect(() => {
     void loadAllAdminData();
   }, [token]);
+
+  const handleUpdateAdminCredentials = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setNotice(null);
+    if (credNewPassword && credNewPassword.length < 6) {
+      setError('New administrator password must be at least 6 characters.');
+      return;
+    }
+    if (credNewPassword && credNewPassword !== credConfirmPassword) {
+      setError('New administrator password and confirmation do not match.');
+      return;
+    }
+    setSavingCreds(true);
+    try {
+      const res = await apiFetch<{
+        token: string;
+        user: UserProfile;
+        credentials: AdminCredentialInfo;
+      }>(
+        '/api/auth/admin/change-credentials',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            currentPassword: credCurrentPassword,
+            name: credName,
+            email: credEmail,
+            ...(credNewPassword ? { newPassword: credNewPassword } : {}),
+          }),
+        },
+        token
+      );
+      setAdminCredInfo(res.credentials);
+      setCredCurrentPassword('');
+      setCredNewPassword('');
+      setCredConfirmPassword('');
+      setNotice('Administrator credentials updated and active.');
+      onSessionUpdated?.(res.token, res.user);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSavingCreds(false);
+    }
+  };
+
+  const handleRegenerateAdminRecoveryKey = async () => {
+    setError(null);
+    setNotice(null);
+    if (!credCurrentPassword) {
+      setError('Enter your Current Admin Password above before generating a new Recovery Key.');
+      return;
+    }
+    setSavingCreds(true);
+    try {
+      const res = await apiFetch<{
+        token: string;
+        user: UserProfile;
+        credentials: AdminCredentialInfo;
+        newRecoveryKey?: string;
+      }>(
+        '/api/auth/admin/change-credentials',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            currentPassword: credCurrentPassword,
+            regenerateRecoveryKey: true,
+          }),
+        },
+        token
+      );
+      setAdminCredInfo(res.credentials);
+      setCredCurrentPassword('');
+      if (res.newRecoveryKey) {
+        setGeneratedAdminKey(res.newRecoveryKey);
+      }
+      setNotice('New one-time Admin Recovery Key generated. Save it securely below.');
+      onSessionUpdated?.(res.token, res.user);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSavingCreds(false);
+    }
+  };
+
+  const handleGenerateCustomerResetCode = async (customer: CustomerRow) => {
+    setError(null);
+    try {
+      const res = await apiFetch<{
+        resetCode: string;
+        expiresAt: string;
+        customerName: string;
+        customerEmail: string;
+      }>(`/api/admin/customers/${customer.id}/reset-code`, { method: 'POST' }, token);
+      setIssuedCustomerReset(res);
+      setCopiedCustomerCode(false);
+      setNotice(`15-minute password reset code generated for ${customer.email}.`);
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
 
   const openNewVehicleForm = () => {
     setEditingVehicle(null);
@@ -1003,6 +1146,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     { id: 'payments', label: 'Payments', icon: <DollarSign className="w-4 h-4" /> },
     { id: 'enquiries', label: 'Enquiries', icon: <MessageSquare className="w-4 h-4" /> },
     { id: 'reports', label: 'Reports', icon: <BarChart3 className="w-4 h-4" /> },
+    { id: 'credentials', label: 'Admin Credentials', icon: <KeyRound className="w-4 h-4" /> },
     { id: 'settings', label: 'Website Settings', icon: <Settings className="w-4 h-4" /> },
   ];
 
@@ -1629,31 +1773,101 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
             {/* CUSTOMERS TAB */}
             {tab === 'customers' && (
-              <div className="bg-white border border-slate-200 rounded-xl overflow-x-auto">
-                <table className="w-full text-left text-xs">
-                  <thead className="border-b border-slate-200 text-slate-500 bg-[#F5F7FA]">
-                    <tr>
-                      <th className="py-3 px-4">Customer</th>
-                      <th className="py-3 px-3">Email</th>
-                      <th className="py-3 px-3">Phone</th>
-                      <th className="py-3 px-3">Trips</th>
-                      <th className="py-3 px-3">Last Trip</th>
-                      <th className="py-3 px-4 text-right">Total Paid</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {customers.map((c) => (
-                      <tr key={c.email}>
-                        <td className="py-3 px-4 font-bold text-[#102A43]">{c.name}</td>
-                        <td className="py-3 px-3">{c.email}</td>
-                        <td className="py-3 px-3">{c.phone}</td>
-                        <td className="py-3 px-3 tabular-nums font-semibold">{c.bookingsCount}</td>
-                        <td className="py-3 px-3 tabular-nums">{c.lastTripDate}</td>
-                        <td className="py-3 px-4 text-right font-bold tabular-nums">{formatINR(c.totalSpent)}</td>
+              <div className="space-y-4">
+                {issuedCustomerReset && (
+                  <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <p className="text-xs font-bold text-[#102A43]">
+                        One-Time Customer Reset Code Issued for {issuedCustomerReset.customerName} ({issuedCustomerReset.customerEmail})
+                      </p>
+                      <p className="text-[11px] text-slate-600 mt-0.5">
+                        Valid for 15 minutes (until {new Date(issuedCustomerReset.expiresAt).toLocaleTimeString()}). Customer enters this under Login → Forgot Password → Desk Code.
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="px-3 py-1.5 bg-white border border-blue-300 rounded-lg font-mono text-sm font-bold text-[#102A43] tracking-widest">
+                        {issuedCustomerReset.resetCode}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            await navigator.clipboard.writeText(issuedCustomerReset.resetCode);
+                            setCopiedCustomerCode(true);
+                          } catch {}
+                        }}
+                        className="px-3 py-1.5 text-xs font-semibold bg-[#102A43] text-white rounded-lg inline-flex items-center gap-1 cursor-pointer"
+                      >
+                        {copiedCustomerCode ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                        {copiedCustomerCode ? 'Copied' : 'Copy'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setIssuedCustomerReset(null)}
+                        className="text-xs font-semibold text-slate-500 hover:text-[#102A43] px-2 cursor-pointer"
+                      >
+                        Close
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                <div className="bg-white border border-slate-200 rounded-xl overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead className="border-b border-slate-200 text-slate-500 bg-[#F5F7FA]">
+                      <tr>
+                        <th className="py-3 px-4">Customer</th>
+                        <th className="py-3 px-3">Account</th>
+                        <th className="py-3 px-3">Email</th>
+                        <th className="py-3 px-3">Phone</th>
+                        <th className="py-3 px-3">Trips</th>
+                        <th className="py-3 px-3">Last Trip</th>
+                        <th className="py-3 px-3 text-right">Total Paid</th>
+                        <th className="py-3 px-4 text-right">Password Recovery</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {customers.map((c) => (
+                        <tr key={c.email}>
+                          <td className="py-3 px-4 font-bold text-[#102A43]">{c.name}</td>
+                          <td className="py-3 px-3">
+                            <span
+                              className={`inline-block px-2 py-0.5 rounded text-[11px] font-semibold ${
+                                c.isRegistered
+                                  ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+                                  : 'bg-slate-100 text-slate-600'
+                              }`}
+                            >
+                              {c.isRegistered ? 'Registered' : 'Guest'}
+                            </span>
+                            {c.isRegistered && c.hasRecoveryPin && (
+                              <span className="ml-1.5 text-[10px] font-medium text-[#2563EB]">PIN Set</span>
+                            )}
+                          </td>
+                          <td className="py-3 px-3">{c.email}</td>
+                          <td className="py-3 px-3">{c.phone}</td>
+                          <td className="py-3 px-3 tabular-nums font-semibold">{c.bookingsCount}</td>
+                          <td className="py-3 px-3 tabular-nums">{c.lastTripDate}</td>
+                          <td className="py-3 px-3 text-right font-bold tabular-nums">{formatINR(c.totalSpent)}</td>
+                          <td className="py-3 px-4 text-right">
+                            {c.isRegistered ? (
+                              <button
+                                type="button"
+                                onClick={() => handleGenerateCustomerResetCode(c)}
+                                className="px-2.5 py-1 bg-[#F5F7FA] hover:bg-blue-50 text-[#102A43] hover:text-[#2563EB] border border-slate-200 rounded font-semibold inline-flex items-center gap-1 cursor-pointer"
+                              >
+                                <KeyRound className="w-3 h-3" />
+                                Issue Reset Code
+                              </button>
+                            ) : (
+                              <span className="text-[11px] text-slate-400">Guest checkout</span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             )}
 
@@ -3503,6 +3717,210 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     </div>
                   ))}
                 </div>
+              </div>
+            )}
+
+            {/* ADMIN CREDENTIALS & RECOVERY TAB */}
+            {tab === 'credentials' && (
+              <div className="space-y-5">
+                <div className="bg-white border border-slate-200 rounded-xl p-5">
+                  <div className="flex flex-wrap items-start justify-between gap-4 border-b border-slate-100 pb-4">
+                    <div className="flex items-start gap-3">
+                      <div className="w-10 h-10 rounded-lg bg-blue-50 text-[#2563EB] flex items-center justify-center shrink-0">
+                        <ShieldCheck className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <h2 className="text-base font-bold text-[#102A43]">Administrator Credentials & Access</h2>
+                        <p className="text-xs text-slate-500 mt-0.5">
+                          View your active administrator sign-in details, update email or password, and manage your Recovery Key.
+                        </p>
+                      </div>
+                    </div>
+                    <span
+                      className={`px-2.5 py-1 text-[11px] font-semibold rounded-md ${
+                        adminCredInfo?.envPasscodeConfigured
+                          ? 'bg-amber-50 text-amber-900 border border-amber-200'
+                          : 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+                      }`}
+                    >
+                      {adminCredInfo?.envPasscodeConfigured
+                        ? 'Environment Passcode Mode'
+                        : 'Database Admin Account'}
+                    </span>
+                  </div>
+
+                  {adminCredInfo && (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 pt-4">
+                      <div className="p-3.5 rounded-lg bg-[#F5F7FA] border border-slate-200">
+                        <p className="text-[11px] text-slate-500">Administrator Name</p>
+                        <p className="text-sm font-bold text-[#102A43] mt-0.5">{adminCredInfo.name}</p>
+                      </div>
+                      <div className="p-3.5 rounded-lg bg-[#F5F7FA] border border-slate-200">
+                        <p className="text-[11px] text-slate-500">Admin Login Email</p>
+                        <p className="text-sm font-mono font-semibold text-[#102A43] mt-0.5 break-all">
+                          {adminCredInfo.email}
+                        </p>
+                      </div>
+                      <div className="p-3.5 rounded-lg bg-[#F5F7FA] border border-slate-200">
+                        <p className="text-[11px] text-slate-500">Forgot-Password Recovery Key</p>
+                        <p
+                          className={`text-sm font-bold mt-0.5 ${
+                            adminCredInfo.hasRecoveryKey ? 'text-emerald-700' : 'text-amber-700'
+                          }`}
+                        >
+                          {adminCredInfo.envPasscodeConfigured
+                            ? 'Env Managed'
+                            : adminCredInfo.hasRecoveryKey
+                            ? 'Configured & Active'
+                            : 'Not Generated Yet'}
+                        </p>
+                      </div>
+                      <div className="p-3.5 rounded-lg bg-[#F5F7FA] border border-slate-200">
+                        <p className="text-[11px] text-slate-500">Last Credential Update</p>
+                        <p className="text-xs font-semibold text-[#102A43] mt-1 tabular-nums">
+                          {adminCredInfo.updatedAt
+                            ? new Date(adminCredInfo.updatedAt).toLocaleString()
+                            : new Date(adminCredInfo.createdAt).toLocaleString()}
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {adminCredInfo?.envPasscodeConfigured ? (
+                  <div className="bg-amber-50 border border-amber-200 rounded-xl p-5 text-xs text-amber-950 space-y-1.5">
+                    <p className="font-bold text-sm">Admin Access Managed via Server Environment Configuration</p>
+                    <p>
+                      Your deployment sets <code className="font-mono bg-white/80 px-1.5 py-0.5 rounded">ADMIN_PASSCODE</code> in environment variables. Update or rotate that environment variable on the host to change the admin passcode.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+                    <form
+                      onSubmit={handleUpdateAdminCredentials}
+                      className="lg:col-span-2 bg-white border border-slate-200 rounded-xl p-5 space-y-4"
+                    >
+                      <h3 className="text-sm font-bold text-[#102A43]">Update Admin Email, Name & Password</h3>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div>
+                          <label className="block text-xs font-medium text-slate-600 mb-1">
+                            Administrator Name *
+                          </label>
+                          <input
+                            type="text"
+                            required
+                            value={credName}
+                            onChange={(e) => setCredName(e.target.value)}
+                            className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-slate-600 mb-1">
+                            Administrator Email *
+                          </label>
+                          <input
+                            type="email"
+                            required
+                            value={credEmail}
+                            onChange={(e) => setCredEmail(e.target.value)}
+                            className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
+                          />
+                        </div>
+                        <div className="sm:col-span-2">
+                          <label className="block text-xs font-medium text-slate-600 mb-1">
+                            Current Admin Password * (required to save any change)
+                          </label>
+                          <input
+                            type="password"
+                            required
+                            value={credCurrentPassword}
+                            onChange={(e) => setCredCurrentPassword(e.target.value)}
+                            placeholder="Enter your current password"
+                            className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-slate-600 mb-1">
+                            New Password (Optional · min 6 chars)
+                          </label>
+                          <input
+                            type="password"
+                            minLength={6}
+                            value={credNewPassword}
+                            onChange={(e) => setCredNewPassword(e.target.value)}
+                            placeholder="Leave blank to keep current password"
+                            className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-slate-600 mb-1">
+                            Confirm New Password
+                          </label>
+                          <input
+                            type="password"
+                            minLength={6}
+                            value={credConfirmPassword}
+                            onChange={(e) => setCredConfirmPassword(e.target.value)}
+                            placeholder="Repeat new password"
+                            className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
+                          />
+                        </div>
+                      </div>
+                      <button
+                        type="submit"
+                        disabled={savingCreds}
+                        className="px-5 py-2.5 bg-[#102A43] hover:bg-[#1a3c5e] text-white text-xs font-semibold rounded-lg cursor-pointer disabled:opacity-60"
+                      >
+                        {savingCreds ? 'Updating...' : 'Save Admin Credentials'}
+                      </button>
+                    </form>
+
+                    <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-4 flex flex-col justify-between">
+                      <div className="space-y-3">
+                        <h3 className="text-sm font-bold text-[#102A43]">Forgot-Password Recovery Key</h3>
+                        <p className="text-xs text-slate-600 leading-relaxed">
+                          Generate or rotate your one-time Admin Recovery Key. Use this key on the{' '}
+                          <strong>Admin Console → Forgot Admin Password</strong> screen if you ever lose your password.
+                        </p>
+                        {generatedAdminKey && (
+                          <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-lg space-y-2">
+                            <p className="text-[11px] font-bold text-emerald-900">
+                              NEW ONE-TIME RECOVERY KEY (SAVE NOW)
+                            </p>
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="font-mono text-sm font-bold text-[#102A43] tracking-wider">
+                                {generatedAdminKey}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  try {
+                                    await navigator.clipboard.writeText(generatedAdminKey);
+                                    setCopiedAdminKey(true);
+                                    setTimeout(() => setCopiedAdminKey(false), 2000);
+                                  } catch {}
+                                }}
+                                className="px-2.5 py-1 text-[11px] font-semibold bg-white border border-emerald-300 rounded inline-flex items-center gap-1 cursor-pointer"
+                              >
+                                {copiedAdminKey ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                                {copiedAdminKey ? 'Copied' : 'Copy'}
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        disabled={savingCreds}
+                        onClick={handleRegenerateAdminRecoveryKey}
+                        className="w-full py-2.5 px-4 bg-[#2563EB] hover:bg-[#1d4ed8] text-white text-xs font-semibold rounded-lg inline-flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-60"
+                      >
+                        <KeyRound className="w-3.5 h-3.5" />
+                        {adminCredInfo?.hasRecoveryKey ? 'Rotate Recovery Key' : 'Generate Recovery Key'}
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>

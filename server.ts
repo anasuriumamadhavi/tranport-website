@@ -8,8 +8,13 @@ import { createServer as createViteServer } from 'vite';
 import { db, SEED_SETTINGS, StoredUser } from './server/db';
 import {
   AuthenticatedRequest,
+  checkRateLimit,
+  clearRateLimit,
   extractBearerToken,
+  generateRecoveryKey,
+  generateShortResetCode,
   hashPassword,
+  maskEmail,
   requireAdmin,
   requireAuth,
   signToken,
@@ -58,6 +63,25 @@ function asString(val: unknown, maxLen = 400): string {
 function asNumber(val: unknown, fallback = 0): number {
   const n = Number(val);
   return Number.isFinite(n) ? n : fallback;
+}
+
+function normalizePhoneDigits(phone: string): string {
+  const digits = phone.replace(/[^\d]/g, '');
+  return digits.length > 10 ? digits.slice(-10) : digits;
+}
+
+function toPublicUser(user: StoredUser) {
+  const {
+    passwordHash: _p,
+    recoveryPinHash,
+    resetTokenHash: _rt,
+    resetTokenExpiresAt: _re,
+    ...rest
+  } = user;
+  return {
+    ...rest,
+    hasRecoveryPin: Boolean(recoveryPinHash),
+  };
 }
 
 function sanitizeAssetUrl(val: unknown, fallback: string): string {
@@ -467,10 +491,18 @@ async function startServer() {
     res.json({
       setupRequired: !envPasscodeConfigured && creds.length === 0,
       envPasscodeConfigured,
+      hasClaimedAdmin: creds.length > 0,
+      maskedAdminEmail: creds.length > 0 ? maskEmail(creds[0].email) : null,
     });
   });
 
   app.post('/api/auth/admin/setup', async (req: Request, res: Response) => {
+    const rl = checkRateLimit(`admin-setup:${req.ip}`, 6);
+    if (!rl.allowed) {
+      res.status(429).json({ error: `Too many setup attempts. Try again in ${rl.retryAfterSeconds}s.` });
+      return;
+    }
+
     if (process.env.ADMIN_PASSCODE?.trim()) {
       res.status(403).json({ error: 'Admin passcode is managed by environment configuration.' });
       return;
@@ -484,21 +516,35 @@ async function startServer() {
     const email = asString(req.body.email, 120).toLowerCase();
     const name = asString(req.body.name, 80) || 'Fleet Administrator';
     const password = asString(req.body.password, 100);
+    const customRecoveryKey = asString(req.body.recoveryKey, 64);
 
     if (!email || !email.includes('@') || password.length < 6) {
       res.status(400).json({ error: 'Valid admin email and password (min 6 characters) are required.' });
       return;
     }
+    if (customRecoveryKey && customRecoveryKey.length < 6) {
+      res.status(400).json({ error: 'Custom recovery key must be at least 6 characters.' });
+      return;
+    }
 
-    const passwordHash = await hashPassword(password);
+    const recoveryKey = customRecoveryKey || generateRecoveryKey('VJT');
+    const [passwordHash, recoveryCodeHash] = await Promise.all([
+      hashPassword(password),
+      hashPassword(recoveryKey),
+    ]);
+
+    const now = new Date().toISOString();
     const adminRec = {
       id: `adm-${Date.now()}`,
       email,
       name,
       passwordHash,
-      createdAt: new Date().toISOString(),
+      recoveryCodeHash,
+      createdAt: now,
+      updatedAt: now,
     };
     await db.insertOne('adminCredentials', adminRec);
+    clearRateLimit(`admin-setup:${req.ip}`);
 
     const token = signToken({
       userId: adminRec.id,
@@ -509,13 +555,27 @@ async function startServer() {
 
     res.status(201).json({
       token,
-      user: { id: adminRec.id, email: adminRec.email, name: adminRec.name, phone: '', role: 'admin', createdAt: adminRec.createdAt },
+      recoveryKey,
+      user: {
+        id: adminRec.id,
+        email: adminRec.email,
+        name: adminRec.name,
+        phone: '',
+        role: 'admin',
+        createdAt: adminRec.createdAt,
+      },
     });
   });
 
   app.post('/api/auth/admin/login', async (req: Request, res: Response) => {
     const email = asString(req.body.email, 120).toLowerCase();
     const password = asString(req.body.password, 100);
+    const rlKey = `admin-login:${req.ip}:${email || 'env'}`;
+    const rl = checkRateLimit(rlKey, 8);
+    if (!rl.allowed) {
+      res.status(429).json({ error: `Too many login attempts. Try again in ${rl.retryAfterSeconds}s.` });
+      return;
+    }
 
     const envPasscode = process.env.ADMIN_PASSCODE?.trim();
     if (envPasscode) {
@@ -523,6 +583,7 @@ async function startServer() {
         res.status(401).json({ error: 'Invalid administrator credentials' });
         return;
       }
+      clearRateLimit(rlKey);
       const adminEmail = email || 'admin@vizagjagantravels.com';
       const token = signToken({
         userId: 'adm-env',
@@ -532,7 +593,14 @@ async function startServer() {
       });
       res.json({
         token,
-        user: { id: 'adm-env', email: adminEmail, name: 'Fleet Administrator', phone: '', role: 'admin', createdAt: new Date().toISOString() },
+        user: {
+          id: 'adm-env',
+          email: adminEmail,
+          name: 'Fleet Administrator',
+          phone: '',
+          role: 'admin',
+          createdAt: new Date().toISOString(),
+        },
       });
       return;
     }
@@ -544,11 +612,12 @@ async function startServer() {
     }
 
     const matched = email ? creds.find((c) => c.email === email) : creds[0];
-    if (!matched || !(await verifyPassword(password, matched.passwordHash))) {
+    if (!matched || !password || !(await verifyPassword(password, matched.passwordHash))) {
       res.status(401).json({ error: 'Invalid administrator email or password' });
       return;
     }
 
+    clearRateLimit(rlKey);
     const token = signToken({
       userId: matched.id,
       email: matched.email,
@@ -569,14 +638,193 @@ async function startServer() {
     });
   });
 
+  app.post('/api/auth/admin/forgot-password', async (req: Request, res: Response) => {
+    const email = asString(req.body.email, 120).toLowerCase();
+    const recoveryProof = asString(req.body.recoveryKeyOrPasscode, 120);
+    const newPassword = asString(req.body.newPassword, 100);
+    const rlKey = `admin-forgot:${req.ip}`;
+    const rl = checkRateLimit(rlKey, 6);
+    if (!rl.allowed) {
+      res.status(429).json({ error: `Too many reset attempts. Try again in ${rl.retryAfterSeconds}s.` });
+      return;
+    }
+
+    const envPasscode = process.env.ADMIN_PASSCODE?.trim();
+    if (envPasscode) {
+      res.status(400).json({
+        error:
+          'Admin access is controlled by the server ADMIN_PASSCODE configuration. Update ADMIN_PASSCODE in your environment settings to rotate it.',
+      });
+      return;
+    }
+
+    if (!email || !email.includes('@') || !recoveryProof || newPassword.length < 6) {
+      res.status(400).json({
+        error: 'Admin email, recovery key, and new password (min 6 characters) are required.',
+      });
+      return;
+    }
+
+    const creds = await db.getAll('adminCredentials');
+    const matched = creds.find((c) => c.email === email);
+    if (!matched || !matched.recoveryCodeHash) {
+      res.status(401).json({
+        error: 'Invalid admin email or recovery key. Contact your deployment owner if no recovery key was saved.',
+      });
+      return;
+    }
+
+    const proofValid =
+      (await verifyPassword(recoveryProof, matched.recoveryCodeHash)) ||
+      (await verifyPassword(recoveryProof.toUpperCase(), matched.recoveryCodeHash));
+
+    if (!proofValid) {
+      res.status(401).json({ error: 'Invalid admin email or recovery key.' });
+      return;
+    }
+
+    const passwordHash = await hashPassword(newPassword);
+    await db.updateOneById('adminCredentials', matched.id, {
+      passwordHash,
+      updatedAt: new Date().toISOString(),
+    });
+    clearRateLimit(rlKey);
+
+    res.json({
+      message: 'Administrator password reset successfully. You can now sign in with your new password.',
+    });
+  });
+
+  app.get('/api/auth/admin/credentials', requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+    const creds = await db.getAll('adminCredentials');
+    const envPasscodeConfigured = Boolean(process.env.ADMIN_PASSCODE?.trim());
+    const cred = creds.find((c) => c.id === req.user!.userId) || creds[0] || null;
+    res.json({
+      credentials: {
+        id: cred?.id || req.user!.userId,
+        email: cred?.email || req.user!.email,
+        name: cred?.name || req.user!.name,
+        envPasscodeConfigured,
+        hasClaimedAdmin: Boolean(cred),
+        hasRecoveryKey: Boolean(cred?.recoveryCodeHash),
+        createdAt: cred?.createdAt || new Date().toISOString(),
+        updatedAt: cred?.updatedAt || cred?.createdAt || null,
+      },
+    });
+  });
+
+  app.post('/api/auth/admin/change-credentials', requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+    const envPasscodeConfigured = Boolean(process.env.ADMIN_PASSCODE?.trim());
+    if (envPasscodeConfigured) {
+      res.status(400).json({
+        error:
+          'Admin access is currently locked to server ADMIN_PASSCODE. Clear ADMIN_PASSCODE to manage email & password credentials in the database.',
+      });
+      return;
+    }
+
+    const creds = await db.getAll('adminCredentials');
+    const cred = creds.find((c) => c.id === req.user!.userId) || creds[0];
+    if (!cred) {
+      res.status(404).json({ error: 'Claimed admin credential record not found.' });
+      return;
+    }
+
+    const currentPassword = asString(req.body.currentPassword, 100);
+    if (!currentPassword || !(await verifyPassword(currentPassword, cred.passwordHash))) {
+      res.status(401).json({ error: 'Current admin password is incorrect.' });
+      return;
+    }
+
+    const nextName = asString(req.body.name, 80);
+    const nextEmail = asString(req.body.email, 120).toLowerCase();
+    const newPassword = asString(req.body.newPassword, 100);
+    const regenerateRecoveryKey = Boolean(req.body.regenerateRecoveryKey);
+
+    if (nextEmail && !nextEmail.includes('@')) {
+      res.status(400).json({ error: 'Please provide a valid administrator email address.' });
+      return;
+    }
+    if (newPassword && newPassword.length < 6) {
+      res.status(400).json({ error: 'New admin password must be at least 6 characters.' });
+      return;
+    }
+
+    const patch: {
+      name?: string;
+      email?: string;
+      passwordHash?: string;
+      recoveryCodeHash?: string;
+      updatedAt: string;
+    } = {
+      updatedAt: new Date().toISOString(),
+    };
+    if (nextName) patch.name = nextName;
+    if (nextEmail) patch.email = nextEmail;
+    if (newPassword) patch.passwordHash = await hashPassword(newPassword);
+
+    let generatedKey: string | undefined;
+    if (regenerateRecoveryKey) {
+      generatedKey = generateRecoveryKey('VJT');
+      patch.recoveryCodeHash = await hashPassword(generatedKey);
+    }
+
+    const updated = await db.updateOneById('adminCredentials', cred.id, patch);
+    if (!updated) {
+      res.status(404).json({ error: 'Failed to update admin credentials.' });
+      return;
+    }
+
+    const token = signToken({
+      userId: updated.id,
+      email: updated.email,
+      name: updated.name,
+      role: 'admin',
+    });
+
+    res.json({
+      token,
+      newRecoveryKey: generatedKey,
+      user: {
+        id: updated.id,
+        email: updated.email,
+        name: updated.name,
+        phone: '',
+        role: 'admin',
+        createdAt: updated.createdAt,
+      },
+      credentials: {
+        id: updated.id,
+        email: updated.email,
+        name: updated.name,
+        envPasscodeConfigured: false,
+        hasClaimedAdmin: true,
+        hasRecoveryKey: Boolean(updated.recoveryCodeHash),
+        createdAt: updated.createdAt,
+        updatedAt: updated.updatedAt || updated.createdAt,
+      },
+    });
+  });
+
   app.post('/api/auth/register', async (req: Request, res: Response) => {
+    const rl = checkRateLimit(`register:${req.ip}`, 10);
+    if (!rl.allowed) {
+      res.status(429).json({ error: `Too many registration attempts. Try again in ${rl.retryAfterSeconds}s.` });
+      return;
+    }
+
     const name = asString(req.body.name, 80);
     const email = asString(req.body.email, 120).toLowerCase();
     const phone = asString(req.body.phone, 30);
     const password = asString(req.body.password, 100);
+    const recoveryPin = asString(req.body.recoveryPin, 24);
 
     if (!name || !email.includes('@') || !phone || password.length < 6) {
       res.status(400).json({ error: 'Name, valid email, mobile number, and password (6+ chars) are required.' });
+      return;
+    }
+    if (recoveryPin && recoveryPin.length < 4) {
+      res.status(400).json({ error: 'Recovery PIN must be at least 4 characters.' });
       return;
     }
 
@@ -586,7 +834,11 @@ async function startServer() {
       return;
     }
 
-    const passwordHash = await hashPassword(password);
+    const [passwordHash, recoveryPinHash] = await Promise.all([
+      hashPassword(password),
+      recoveryPin ? hashPassword(recoveryPin) : Promise.resolve(undefined),
+    ]);
+
     const user: StoredUser = {
       id: `usr-${Date.now()}`,
       name,
@@ -595,6 +847,7 @@ async function startServer() {
       address: asString(req.body.address, 200),
       role: 'customer',
       passwordHash,
+      ...(recoveryPinHash ? { recoveryPinHash } : {}),
       createdAt: new Date().toISOString(),
     };
     await db.insertOne('users', user);
@@ -606,21 +859,27 @@ async function startServer() {
       role: 'customer',
     });
 
-    const { passwordHash: _, ...publicUser } = user;
-    res.status(201).json({ token, user: publicUser });
+    res.status(201).json({ token, user: toPublicUser(user) });
   });
 
   app.post('/api/auth/login', async (req: Request, res: Response) => {
     const email = asString(req.body.email, 120).toLowerCase();
     const password = asString(req.body.password, 100);
+    const rlKey = `login:${req.ip}:${email}`;
+    const rl = checkRateLimit(rlKey, 10);
+    if (!rl.allowed) {
+      res.status(429).json({ error: `Too many login attempts. Try again in ${rl.retryAfterSeconds}s.` });
+      return;
+    }
 
     const users = await db.getAll('users');
     const user = users.find((u) => u.email === email);
-    if (!user || !(await verifyPassword(password, user.passwordHash))) {
+    if (!user || !password || !(await verifyPassword(password, user.passwordHash))) {
       res.status(401).json({ error: 'Invalid email or password' });
       return;
     }
 
+    clearRateLimit(rlKey);
     const token = signToken({
       userId: user.id,
       email: user.email,
@@ -628,8 +887,92 @@ async function startServer() {
       role: 'customer',
     });
 
-    const { passwordHash: _, ...publicUser } = user;
-    res.json({ token, user: publicUser });
+    res.json({ token, user: toPublicUser(user) });
+  });
+
+  app.post('/api/auth/forgot-password', async (req: Request, res: Response) => {
+    const email = asString(req.body.email, 120).toLowerCase();
+    const verificationType = asString(req.body.verificationType, 20) as 'pin' | 'reset_code' | 'booking';
+    const newPassword = asString(req.body.newPassword, 100);
+
+    const rlKey = `forgot:${req.ip}:${email || 'none'}`;
+    const rl = checkRateLimit(rlKey, 8);
+    if (!rl.allowed) {
+      res.status(429).json({ error: `Too many password reset attempts. Try again in ${rl.retryAfterSeconds}s.` });
+      return;
+    }
+
+    if (!email || !email.includes('@') || newPassword.length < 6) {
+      res.status(400).json({ error: 'Registered email and a new password (min 6 characters) are required.' });
+      return;
+    }
+
+    const users = await db.getAll('users');
+    const user = users.find((u) => u.email === email);
+    if (!user) {
+      res.status(400).json({
+        error: 'Unable to verify account details. Check your email or verification details and try again.',
+      });
+      return;
+    }
+
+    let verified = false;
+    if (verificationType === 'pin') {
+      const recoveryPin = asString(req.body.recoveryPin, 24);
+      if (recoveryPin && user.recoveryPinHash) {
+        verified = await verifyPassword(recoveryPin, user.recoveryPinHash);
+      }
+    } else if (verificationType === 'reset_code') {
+      const resetCode = asString(req.body.resetCode, 20).toUpperCase();
+      if (
+        resetCode &&
+        user.resetTokenHash &&
+        user.resetTokenExpiresAt &&
+        new Date(user.resetTokenExpiresAt).getTime() > Date.now()
+      ) {
+        verified = await verifyPassword(resetCode, user.resetTokenHash);
+      }
+    } else if (verificationType === 'booking') {
+      const phone = normalizePhoneDigits(asString(req.body.phone, 30));
+      const bookingCode = asString(req.body.bookingCode, 40).toUpperCase();
+      const userDigits = normalizePhoneDigits(user.phone);
+      if (phone.length >= 8 && bookingCode && phone === userDigits) {
+        const bookings = await db.getAll('bookings');
+        verified = bookings.some(
+          (b) =>
+            b.customerEmail.toLowerCase() === email &&
+            b.bookingCode.toUpperCase() === bookingCode &&
+            normalizePhoneDigits(b.customerPhone) === phone
+        );
+      }
+    } else {
+      res.status(400).json({ error: 'Invalid verification method selected.' });
+      return;
+    }
+
+    if (!verified) {
+      res.status(401).json({
+        error:
+          verificationType === 'pin'
+            ? 'Email or Recovery PIN did not match. Try Booking Verification or request a Dispatch Reset Code.'
+            : verificationType === 'reset_code'
+            ? 'Invalid or expired Dispatch Reset Code. Request a new code from our 24/7 desk.'
+            : 'Email, registered mobile number, and Booking Reference ID did not match our records.',
+      });
+      return;
+    }
+
+    const passwordHash = await hashPassword(newPassword);
+    await db.updateOneById('users', user.id, {
+      passwordHash,
+      resetTokenHash: undefined,
+      resetTokenExpiresAt: undefined,
+    });
+    clearRateLimit(rlKey);
+
+    res.json({
+      message: 'Password updated successfully. You can now sign in with your new password.',
+    });
   });
 
   app.get('/api/auth/me', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
@@ -652,8 +995,7 @@ async function startServer() {
       res.status(404).json({ error: 'Account not found' });
       return;
     }
-    const { passwordHash: _, ...publicUser } = user;
-    res.json({ user: publicUser });
+    res.json({ user: toPublicUser(user) });
   });
 
   app.patch('/api/auth/profile', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
@@ -661,20 +1003,53 @@ async function startServer() {
       res.status(403).json({ error: 'Customer profile endpoint' });
       return;
     }
+
+    const users = await db.getAll('users');
+    const currentUser = users.find((u) => u.id === req.user!.userId);
+    if (!currentUser) {
+      res.status(404).json({ error: 'Customer not found' });
+      return;
+    }
+
     const name = asString(req.body.name, 80);
     const phone = asString(req.body.phone, 30);
+    const hasAddress = typeof req.body.address === 'string';
     const address = asString(req.body.address, 200);
-    const updated = await db.updateOneById('users', req.user!.userId, {
-      ...(name ? { name } : {}),
-      ...(phone ? { phone } : {}),
-      address,
-    });
+    const recoveryPin = asString(req.body.recoveryPin, 24);
+    const currentPassword = asString(req.body.currentPassword, 100);
+    const newPassword = asString(req.body.newPassword, 100);
+
+    const patch: Partial<StoredUser> = {};
+    if (name) patch.name = name;
+    if (phone) patch.phone = phone;
+    if (hasAddress) patch.address = address;
+
+    if (recoveryPin) {
+      if (recoveryPin.length < 4) {
+        res.status(400).json({ error: 'Recovery PIN must be at least 4 characters.' });
+        return;
+      }
+      patch.recoveryPinHash = await hashPassword(recoveryPin);
+    }
+
+    if (newPassword) {
+      if (newPassword.length < 6) {
+        res.status(400).json({ error: 'New password must be at least 6 characters.' });
+        return;
+      }
+      if (!currentPassword || !(await verifyPassword(currentPassword, currentUser.passwordHash))) {
+        res.status(401).json({ error: 'Current password is incorrect.' });
+        return;
+      }
+      patch.passwordHash = await hashPassword(newPassword);
+    }
+
+    const updated = await db.updateOneById('users', req.user!.userId, patch);
     if (!updated) {
       res.status(404).json({ error: 'Customer not found' });
       return;
     }
-    const { passwordHash: _, ...publicUser } = updated;
-    res.json({ user: publicUser });
+    res.json({ user: toPublicUser(updated) });
   });
 
   // ── Booking & Payment Routes ───────────────────────────────────────────────
@@ -1940,6 +2315,8 @@ async function startServer() {
         bookingsCount: number;
         totalSpent: number;
         lastTripDate: string;
+        isRegistered: boolean;
+        hasRecoveryPin: boolean;
       }
     > = {};
 
@@ -1952,6 +2329,8 @@ async function startServer() {
         bookingsCount: 0,
         totalSpent: 0,
         lastTripDate: u.createdAt.slice(0, 10),
+        isRegistered: true,
+        hasRecoveryPin: Boolean(u.recoveryPinHash),
       };
     }
 
@@ -1966,6 +2345,8 @@ async function startServer() {
           bookingsCount: 0,
           totalSpent: 0,
           lastTripDate: b.journeyDate,
+          isRegistered: false,
+          hasRecoveryPin: false,
         };
       }
       customerMap[key].bookingsCount += 1;
@@ -1976,6 +2357,32 @@ async function startServer() {
     }
 
     res.json({ customers: Object.values(customerMap) });
+  });
+
+  app.post('/api/admin/customers/:id/reset-code', requireAdmin, async (req: Request, res: Response) => {
+    const id = asString(req.params.id, 80);
+    const users = await db.getAll('users');
+    const user = users.find((u) => u.id === id);
+    if (!user) {
+      res.status(404).json({ error: 'Registered customer account not found' });
+      return;
+    }
+
+    const resetCode = generateShortResetCode();
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+    const resetTokenHash = await hashPassword(resetCode);
+
+    await db.updateOneById('users', user.id, {
+      resetTokenHash,
+      resetTokenExpiresAt: expiresAt,
+    });
+
+    res.json({
+      resetCode,
+      expiresAt,
+      customerName: user.name,
+      customerEmail: user.email,
+    });
   });
 
   // Payments & Refunds
