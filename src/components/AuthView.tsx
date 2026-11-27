@@ -373,7 +373,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
                   required
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  placeholder={isAdminTab ? 'admin@vizagjagantravels.com' : 'you@domain.com'}
+                  placeholder={isAdminTab ? 'jagantravelsvizag@gmail.com' : 'you@domain.com'}
                   className="w-full px-3.5 py-2.5 text-sm border border-slate-200 rounded-lg text-[#102A43]"
                 />
               </div>

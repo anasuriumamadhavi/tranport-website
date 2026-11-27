@@ -30,6 +30,7 @@ export interface AdminCredentialRecord {
   name: string;
   passwordHash: string;
   recoveryCodeHash?: string;
+  adminEmailMigrated?: boolean;
   createdAt: string;
   updatedAt?: string;
 }
@@ -1587,6 +1588,16 @@ class HybridDatabase {
             await this.mongoDb.collection('packages').insertMany(structuredClone(SEED_PACKAGES));
           }
         }
+        await this.mongoDb.collection('adminCredentials').updateMany(
+          { adminEmailMigrated: { $ne: true } },
+          {
+            $set: {
+              email: 'jagantravelsvizag@gmail.com',
+              adminEmailMigrated: true,
+              updatedAt: new Date().toISOString(),
+            },
+          }
+        );
         return;
       } catch (err) {
         console.warn('MongoDB connection failed, falling back to durable local store:', (err as Error).message);
@@ -1620,6 +1631,16 @@ class HybridDatabase {
       if (!Array.isArray(this.localCache.packages) || this.localCache.packages.length === 0) {
         this.localCache.packages = structuredClone(SEED_PACKAGES);
         dirty = true;
+      }
+      if (Array.isArray(this.localCache.adminCredentials)) {
+        for (const cred of this.localCache.adminCredentials) {
+          if (!cred.adminEmailMigrated) {
+            cred.email = 'jagantravelsvizag@gmail.com';
+            cred.adminEmailMigrated = true;
+            cred.updatedAt = new Date().toISOString();
+            dirty = true;
+          }
+        }
       }
       if (dirty) {
         this.flushLocal();

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
 import {
   APIProvider,
   AdvancedMarker,
@@ -9,10 +9,21 @@ import {
 } from '@vis.gl/react-google-maps';
 import { MapPin, Navigation } from 'lucide-react';
 
-const MAPS_API_KEY = (import.meta.env.VITE_GOOGLE_MAPS_API_KEY as string | undefined)?.trim() || '';
-const MAPS_MAP_ID =
+const BUILD_MAPS_API_KEY =
+  (import.meta.env.VITE_GOOGLE_MAPS_API_KEY as string | undefined)?.trim() || '';
+const BUILD_MAPS_MAP_ID =
   (import.meta.env.VITE_GOOGLE_MAPS_MAP_ID as string | undefined)?.trim() || 'DEMO_MAP_ID';
 const MAPS_LIBRARIES = ['marker', 'places', 'routes'];
+
+interface MapsRuntimeConfig {
+  apiKey: string;
+  mapId: string;
+}
+
+const MapsConfigContext = createContext<MapsRuntimeConfig>({
+  apiKey: BUILD_MAPS_API_KEY,
+  mapId: BUILD_MAPS_MAP_ID,
+});
 
 export interface PlaceValue {
   address: string;
@@ -74,19 +85,51 @@ function checkQuotaError(err: unknown): void {
 }
 
 export const MapsProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  if (!MAPS_API_KEY) {
-    return <>{children}</>;
-  }
+  const [config, setConfig] = useState<MapsRuntimeConfig>({
+    apiKey: BUILD_MAPS_API_KEY,
+    mapId: BUILD_MAPS_MAP_ID,
+  });
+
+  useEffect(() => {
+    if (BUILD_MAPS_API_KEY) return;
+    let cancelled = false;
+    fetch('/api/config/public')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { mapsApiKey?: string; mapsMapId?: string } | null) => {
+        if (cancelled || !data) return;
+        const apiKey = typeof data.mapsApiKey === 'string' ? data.mapsApiKey.trim() : '';
+        const mapId =
+          typeof data.mapsMapId === 'string' && data.mapsMapId.trim()
+            ? data.mapsMapId.trim()
+            : BUILD_MAPS_MAP_ID;
+        if (apiKey) {
+          setConfig({ apiKey, mapId });
+        }
+      })
+      .catch(() => {
+        // Gracefully remain in fallback mode when runtime config is unavailable
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   return (
-    <APIProvider
-      apiKey={MAPS_API_KEY}
-      version="weekly"
-      libraries={MAPS_LIBRARIES}
-      language="en"
-      region="IN"
-    >
-      {children}
-    </APIProvider>
+    <MapsConfigContext.Provider value={config}>
+      {config.apiKey ? (
+        <APIProvider
+          apiKey={config.apiKey}
+          version="weekly"
+          libraries={MAPS_LIBRARIES}
+          language="en"
+          region="IN"
+        >
+          {children}
+        </APIProvider>
+      ) : (
+        children
+      )}
+    </MapsConfigContext.Provider>
   );
 };
 
@@ -277,7 +320,8 @@ const PlaceAutocompleteWithMaps: React.FC<PlaceAutocompleteInputProps> = (props)
 };
 
 export const PlaceAutocompleteInput: React.FC<PlaceAutocompleteInputProps> = (props) => {
-  if (!MAPS_API_KEY) {
+  const { apiKey } = useContext(MapsConfigContext);
+  if (!apiKey) {
     return <PlaceAutocompleteField {...props} placesLib={null} />;
   }
   return <PlaceAutocompleteWithMaps {...props} />;
@@ -570,12 +614,13 @@ export const RoutePreviewMap: React.FC<{
   destination: PlaceValue;
   onRouteCalculated?: (info: { distanceKm: number; durationText: string }) => void;
 }> = ({ origin, destination, onRouteCalculated }) => {
+  const { apiKey, mapId } = useContext(MapsConfigContext);
   const defaultCenter =
     typeof origin.lat === 'number' && typeof origin.lng === 'number'
       ? { lat: origin.lat, lng: origin.lng }
       : { lat: 17.7212, lng: 83.2245 };
 
-  if (!MAPS_API_KEY) {
+  if (!apiKey) {
     return (
       <div className="w-full h-56 rounded-xl border border-slate-200 bg-[#F5F7FA] flex flex-col items-center justify-center p-6 text-center">
         <MapPin className="w-6 h-6 text-[#2563EB] mb-2" />
@@ -590,7 +635,7 @@ export const RoutePreviewMap: React.FC<{
   return (
     <div className="w-full h-60 rounded-xl overflow-hidden border border-slate-200">
       <GoogleMap
-        mapId={MAPS_MAP_ID}
+        mapId={mapId}
         defaultCenter={defaultCenter}
         defaultZoom={8}
         gestureHandling="cooperative"
@@ -645,9 +690,10 @@ export const DepotLocationMap: React.FC<{
   companyName = 'Vizag Jagan Travels',
   address = 'Dwaraka Nagar Main Road, Visakhapatnam, AP 530016',
 }) => {
+  const { apiKey, mapId } = useContext(MapsConfigContext);
   const depotPos = { lat, lng };
 
-  if (!MAPS_API_KEY) {
+  if (!apiKey) {
     return (
       <div className="w-full h-72 rounded-xl border border-slate-200 bg-[#F5F7FA] flex flex-col items-center justify-center p-6 text-center">
         <MapPin className="w-7 h-7 text-[#2563EB] mb-2" />
@@ -660,7 +706,7 @@ export const DepotLocationMap: React.FC<{
   return (
     <div className="w-full h-72 rounded-xl overflow-hidden border border-slate-200">
       <GoogleMap
-        mapId={MAPS_MAP_ID}
+        mapId={mapId}
         defaultCenter={depotPos}
         defaultZoom={14}
         gestureHandling="cooperative"

@@ -4,5 +4,11 @@ dist/
 coverage/
 .DS_Store
 *.log
+*.local
 .env*
 !.env.example
+.gmp_cache/
+data/
+uploads/
+.vscode/
+.idea/

@@ -188,6 +188,19 @@ async function startServer() {
     });
   });
 
+  // Public runtime client config (reads env vars at runtime so no API keys need to be baked into Git)
+  app.get('/api/config/public', (_req: Request, res: Response) => {
+    const mapsApiKey =
+      process.env.VITE_GOOGLE_MAPS_API_KEY?.trim() ||
+      process.env.GOOGLE_MAPS_API_KEY?.trim() ||
+      '';
+    const mapsMapId =
+      process.env.VITE_GOOGLE_MAPS_MAP_ID?.trim() ||
+      process.env.GOOGLE_MAPS_MAP_ID?.trim() ||
+      'DEMO_MAP_ID';
+    res.json({ mapsApiKey, mapsMapId });
+  });
+
   // ── Public Fleet & Pricing Routes ───────────────────────────────────────────
 
   app.get('/api/categories', async (_req: Request, res: Response) => {
@@ -540,6 +553,7 @@ async function startServer() {
       name,
       passwordHash,
       recoveryCodeHash,
+      adminEmailMigrated: true,
       createdAt: now,
       updatedAt: now,
     };
@@ -584,7 +598,7 @@ async function startServer() {
         return;
       }
       clearRateLimit(rlKey);
-      const adminEmail = email || 'admin@vizagjagantravels.com';
+      const adminEmail = email || 'jagantravelsvizag@gmail.com';
       const token = signToken({
         userId: 'adm-env',
         email: adminEmail,
@@ -755,8 +769,10 @@ async function startServer() {
       email?: string;
       passwordHash?: string;
       recoveryCodeHash?: string;
+      adminEmailMigrated?: boolean;
       updatedAt: string;
     } = {
+      adminEmailMigrated: true,
       updatedAt: new Date().toISOString(),
     };
     if (nextName) patch.name = nextName;
