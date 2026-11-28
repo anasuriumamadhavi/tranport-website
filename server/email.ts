@@ -1,12 +1,77 @@
+import crypto from 'crypto';
 import { Resend } from 'resend';
-import { Booking, BookingStatus, WebsiteSettings } from '../src/types';
-import { db } from './db';
+import { Booking, BookingStatus, Enquiry, WebsiteSettings } from '../src/types';
+import { AdminActionTokenRecord, db } from './db';
 import { generateBookingInvoicePdfBuffer } from './invoicePdf';
 
 const DEFAULT_ADMIN_EMAIL = 'jagantravelsvizag@gmail.com';
 const DEFAULT_FROM_EMAIL = 'Vizag Jagan Travels <onboarding@resend.dev>';
+const ACTION_LINK_TTL_MS = 48 * 60 * 60 * 1000; // 48 hours
 
 const inFlightNotifications = new Set<string>();
+
+export function hashAdminActionToken(rawToken: string): string {
+  return crypto.createHash('sha256').update(rawToken).digest('hex');
+}
+
+function sanitizeBaseUrl(candidate?: string): string {
+  const candidates = [candidate, process.env.APP_URL];
+  for (const item of candidates) {
+    const trimmed = item?.trim();
+    if (!trimmed || trimmed === 'MY_APP_URL') continue;
+    try {
+      const parsed = new URL(trimmed);
+      if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+        return `${parsed.protocol}//${parsed.host}`;
+      }
+    } catch {
+      // ignore invalid URL
+    }
+  }
+  return 'http://localhost:3000';
+}
+
+async function createActionLinksForTarget(
+  targetType: 'booking' | 'enquiry',
+  targetId: string,
+  baseUrl?: string
+): Promise<{ confirmUrl: string; rejectUrl: string }> {
+  const origin = sanitizeBaseUrl(baseUrl);
+  const now = Date.now();
+  const createdAt = new Date(now).toISOString();
+  const expiresAt = new Date(now + ACTION_LINK_TTL_MS).toISOString();
+
+  const confirmRaw = crypto.randomBytes(32).toString('hex');
+  const rejectRaw = crypto.randomBytes(32).toString('hex');
+
+  const records: AdminActionTokenRecord[] = [
+    {
+      id: `act-${now}-c-${crypto.randomBytes(4).toString('hex')}`,
+      tokenHash: hashAdminActionToken(confirmRaw),
+      targetType,
+      targetId,
+      action: 'confirm',
+      expiresAt,
+      createdAt,
+    },
+    {
+      id: `act-${now}-r-${crypto.randomBytes(4).toString('hex')}`,
+      tokenHash: hashAdminActionToken(rejectRaw),
+      targetType,
+      targetId,
+      action: 'reject',
+      expiresAt,
+      createdAt,
+    },
+  ];
+
+  await Promise.all(records.map((rec) => db.insertOne('adminActionTokens', rec)));
+
+  return {
+    confirmUrl: `${origin}/?adminAction=${confirmRaw}`,
+    rejectUrl: `${origin}/?adminAction=${rejectRaw}`,
+  };
+}
 
 function escapeHtml(value: unknown): string {
   const str = String(value ?? '');
@@ -32,14 +97,6 @@ async function resolveAdminEmail(): Promise<string> {
   const envAdmin = process.env.ADMIN_NOTIFICATION_EMAIL?.trim();
   if (envAdmin && envAdmin.includes('@')) {
     return envAdmin;
-  }
-  try {
-    const creds = await db.getAll('adminCredentials');
-    if (creds.length > 0 && creds[0].email?.includes('@')) {
-      return creds[0].email;
-    }
-  } catch {
-    // ignore and use default
   }
   return DEFAULT_ADMIN_EMAIL;
 }
@@ -97,7 +154,46 @@ function buildCustomerConfirmationHtml(booking: Booking, settings?: WebsiteSetti
   `;
 }
 
-function buildAdminNewBookingHtml(booking: Booking, settings?: WebsiteSettings | null): string {
+function buildActionButtonsHtml(params: {
+  confirmUrl: string;
+  rejectUrl: string;
+  confirmLabel: string;
+  rejectLabel: string;
+}): string {
+  return `
+    <div style="margin:20px 0 12px;padding:16px;background:#f8fafc;border:1px solid #cbd5e1;border-radius:8px;">
+      <p style="margin:0 0 12px;font-size:13px;font-weight:700;color:#102a43;">
+        Quick Dispatch Decision (Administrator Verification Required)
+      </p>
+      <table role="presentation" cellspacing="0" cellpadding="0" border="0" style="border-collapse:separate;">
+        <tr>
+          <td bgcolor="#047857" style="border-radius:6px;background-color:#047857;">
+            <a href="${escapeHtml(params.confirmUrl)}" target="_blank" rel="noopener noreferrer"
+               style="display:inline-block;padding:12px 20px;font-family:Arial,Helvetica,sans-serif;font-size:14px;font-weight:700;color:#ffffff;text-decoration:none;border-radius:6px;background-color:#047857;">
+              ${escapeHtml(params.confirmLabel)}
+            </a>
+          </td>
+          <td width="12" style="width:12px;">&nbsp;</td>
+          <td bgcolor="#b91c1c" style="border-radius:6px;background-color:#b91c1c;">
+            <a href="${escapeHtml(params.rejectUrl)}" target="_blank" rel="noopener noreferrer"
+               style="display:inline-block;padding:12px 20px;font-family:Arial,Helvetica,sans-serif;font-size:14px;font-weight:700;color:#ffffff;text-decoration:none;border-radius:6px;background-color:#b91c1c;">
+              ${escapeHtml(params.rejectLabel)}
+            </a>
+          </td>
+        </tr>
+      </table>
+      <p style="margin:10px 0 0;font-size:11px;color:#64748b;">
+        Single-use secure action links valid for 48 hours. Clicking either button opens the secure Admin Confirmation page.
+      </p>
+    </div>
+  `;
+}
+
+function buildAdminNewBookingHtml(
+  booking: Booking,
+  settings?: WebsiteSettings | null,
+  actionLinks?: { confirmUrl: string; rejectUrl: string } | null
+): string {
   const company = settings?.companyName || 'Vizag Jagan Travels';
   return `
     <div style="font-family:Arial,Helvetica,sans-serif;max-width:620px;margin:0 auto;background:#ffffff;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;">
@@ -116,6 +212,16 @@ function buildAdminNewBookingHtml(booking: Booking, settings?: WebsiteSettings |
           ${booking.notes ? `<div><strong>Notes:</strong> ${escapeHtml(booking.notes)}</div>` : ''}
         </div>
         ${buildBookingSummaryRowsHtml(booking)}
+        ${
+          actionLinks
+            ? buildActionButtonsHtml({
+                confirmUrl: actionLinks.confirmUrl,
+                rejectUrl: actionLinks.rejectUrl,
+                confirmLabel: 'Confirm Booking',
+                rejectLabel: 'Reject Booking',
+              })
+            : ''
+        }
       </div>
     </div>
   `;
@@ -166,7 +272,10 @@ function buildStatusUpdateHtml(
   `;
 }
 
-export async function dispatchNewBookingEmails(bookingId: string): Promise<{
+export async function dispatchNewBookingEmails(
+  bookingId: string,
+  baseUrl?: string
+): Promise<{
   skipped?: boolean;
   customerSent: boolean;
   adminSent: boolean;
@@ -241,11 +350,15 @@ export async function dispatchNewBookingEmails(bookingId: string): Promise<{
 
     if (needAdmin) {
       try {
+        const actionLinks =
+          booking.bookingStatus === 'Pending'
+            ? await createActionLinksForTarget('booking', booking.id, baseUrl)
+            : null;
         const result = await resend.emails.send({
           from: fromEmail,
           to: [adminEmail],
           subject: `New Booking #${booking.bookingCode} (${booking.vehicleCategory}) · ${booking.customerName}`,
-          html: buildAdminNewBookingHtml(booking, settings),
+          html: buildAdminNewBookingHtml(booking, settings, actionLinks),
           attachments: attachment,
         });
         if (result.error) {
@@ -293,8 +406,9 @@ export async function dispatchNewBookingEmails(bookingId: string): Promise<{
 
 export async function dispatchBookingStatusEmail(
   bookingId: string,
-  newStatus: BookingStatus
-): Promise<{ sent: boolean; skipped?: boolean; error?: string }> {
+  newStatus: BookingStatus,
+  options?: { notifyAdminWithInvoice?: boolean }
+): Promise<{ sent: boolean; adminSent?: boolean; skipped?: boolean; error?: string }> {
   const lockKey = `status:${bookingId}:${newStatus}`;
   if (inFlightNotifications.has(lockKey)) {
     return { sent: false, skipped: true };
@@ -302,7 +416,11 @@ export async function dispatchBookingStatusEmail(
   inFlightNotifications.add(lockKey);
 
   try {
-    const [bookings, settings] = await Promise.all([db.getAll('bookings'), db.getSettings()]);
+    const [bookings, settings, adminEmail] = await Promise.all([
+      db.getAll('bookings'),
+      db.getSettings(),
+      resolveAdminEmail(),
+    ]);
     const booking = bookings.find((b) => b.id === bookingId);
     if (!booking || !booking.customerEmail?.includes('@')) {
       return { sent: false, skipped: true };
@@ -321,28 +439,69 @@ export async function dispatchBookingStatusEmail(
     }
 
     const attachInvoice = newStatus === 'Confirmed' || newStatus === 'Driver Assigned';
-    const attachments = attachInvoice
-      ? [generateBookingInvoicePdfBuffer(booking, settings)]
+    const pdfBuffer = attachInvoice ? generateBookingInvoicePdfBuffer(booking, settings) : null;
+    const attachments = pdfBuffer
+      ? [{ filename: pdfBuffer.filename, content: pdfBuffer.content }]
       : undefined;
 
     const fromEmail = resolveFromEmail(settings);
-    const result = await resend.emails.send({
-      from: fromEmail,
-      to: [booking.customerEmail],
-      subject: `Booking #${booking.bookingCode} ${newStatus} · ${settings.companyName || 'Vizag Jagan Travels'}`,
-      html: buildStatusUpdateHtml(booking, newStatus, settings),
-      attachments: attachments?.map((a) => ({ filename: a.filename, content: a.content })),
-    });
+    const errors: string[] = [];
+    let customerSent = false;
+    let adminSent = false;
 
-    if (result.error) {
-      await db.updateOneById('bookings', booking.id, {
-        emailNotifications: {
-          ...prevMeta,
-          lastError: `Status email error: ${result.error.message}`,
-        },
+    try {
+      const result = await resend.emails.send({
+        from: fromEmail,
+        to: [booking.customerEmail],
+        subject: `Booking #${booking.bookingCode} ${newStatus} · ${settings.companyName || 'Vizag Jagan Travels'}`,
+        html: buildStatusUpdateHtml(booking, newStatus, settings),
+        attachments,
       });
-      console.warn(`[Email] Status email error for ${booking.bookingCode}:`, result.error.message);
-      return { sent: false, error: result.error.message };
+
+      if (result.error) {
+        errors.push(`Customer status email error: ${result.error.message}`);
+      } else {
+        customerSent = true;
+      }
+    } catch (err) {
+      errors.push(`Customer status email exception: ${(err as Error).message}`);
+    }
+
+    const shouldNotifyAdminInvoice =
+      attachInvoice &&
+      Boolean(options?.notifyAdminWithInvoice || newStatus === 'Confirmed') &&
+      Boolean(adminEmail?.includes('@'));
+
+    if (shouldNotifyAdminInvoice) {
+      try {
+        const adminResult = await resend.emails.send({
+          from: fromEmail,
+          to: [adminEmail],
+          subject: `Confirmed Invoice Copy · Booking #${booking.bookingCode} (${booking.customerName})`,
+          html: `
+            <div style="font-family:Arial,Helvetica,sans-serif;max-width:620px;margin:0 auto;background:#ffffff;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;">
+              <div style="background:#047857;color:#ffffff;padding:20px 24px;">
+                <h2 style="margin:0;font-size:18px;">Booking #${escapeHtml(booking.bookingCode)} Confirmed</h2>
+                <p style="margin:5px 0 0;font-size:13px;color:#ecfdf5;">${escapeHtml(settings.companyName || 'Vizag Jagan Travels')} · Official Invoice Copy</p>
+              </div>
+              <div style="padding:24px;">
+                <p style="margin:0 0 12px;font-size:14px;color:#334155;">
+                  Booking <strong>#${escapeHtml(booking.bookingCode)}</strong> for <strong>${escapeHtml(booking.customerName)}</strong> is now <strong>${escapeHtml(newStatus)}</strong>. The official PDF invoice is attached for admin records.
+                </p>
+                ${buildBookingSummaryRowsHtml(booking)}
+              </div>
+            </div>
+          `,
+          attachments,
+        });
+        if (adminResult.error) {
+          errors.push(`Admin invoice email error: ${adminResult.error.message}`);
+        } else {
+          adminSent = true;
+        }
+      } catch (err) {
+        errors.push(`Admin invoice email exception: ${(err as Error).message}`);
+      }
     }
 
     const nowIso = new Date().toISOString();
@@ -350,15 +509,239 @@ export async function dispatchBookingStatusEmail(
       emailNotifications: {
         ...prevMeta,
         invoiceGeneratedAt: attachInvoice ? nowIso : prevMeta.invoiceGeneratedAt,
+        lastStatusNotified: customerSent ? newStatus : prevMeta.lastStatusNotified,
+        lastStatusNotifiedAt: customerSent ? nowIso : prevMeta.lastStatusNotifiedAt,
+        lastError: errors.length > 0 ? errors.join(' | ') : undefined,
+      },
+    });
+
+    if (errors.length > 0) {
+      console.warn(`[Email] Status email issues for ${booking.bookingCode}:`, errors.join(' | '));
+    }
+
+    return {
+      sent: customerSent,
+      adminSent,
+      error: errors.length > 0 ? errors.join(' | ') : undefined,
+    };
+  } catch (err) {
+    console.warn(`[Email] Status email exception:`, (err as Error).message);
+    return { sent: false, error: (err as Error).message };
+  } finally {
+    inFlightNotifications.delete(lockKey);
+  }
+}
+
+function buildAdminNewEnquiryHtml(
+  enquiry: Enquiry,
+  settings: WebsiteSettings | null,
+  actionLinks?: { confirmUrl: string; rejectUrl: string } | null
+): string {
+  const company = settings?.companyName || 'Vizag Jagan Travels';
+  const hasRealEmail = Boolean(enquiry.email && enquiry.email !== 'not-provided@vizagjagantravels.com');
+  return `
+    <div style="font-family:Arial,Helvetica,sans-serif;max-width:620px;margin:0 auto;background:#ffffff;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;">
+      <div style="background:#102a43;color:#ffffff;padding:20px 24px;">
+        <h2 style="margin:0;font-size:18px;">New Customer Enquiry · ${escapeHtml(enquiry.subject)}</h2>
+        <p style="margin:5px 0 0;font-size:13px;color:#cbd5e1;">${escapeHtml(company)} Dispatch Alert</p>
+      </div>
+      <div style="padding:24px;">
+        <p style="margin:0 0 12px;font-size:14px;color:#334155;">
+          A customer has submitted a new enquiry via <strong>${escapeHtml(enquiry.source)}</strong>.
+        </p>
+        <table style="width:100%;border-collapse:collapse;margin:14px 0;font-size:14px;color:#1e293b;">
+          <tr><td style="padding:8px 0;border-bottom:1px solid #e2e8f0;color:#64748b;">Enquiry ID</td><td style="padding:8px 0;border-bottom:1px solid #e2e8f0;font-weight:700;text-align:right;">${escapeHtml(enquiry.id)}</td></tr>
+          <tr><td style="padding:8px 0;border-bottom:1px solid #e2e8f0;color:#64748b;">Customer</td><td style="padding:8px 0;border-bottom:1px solid #e2e8f0;font-weight:600;text-align:right;">${escapeHtml(enquiry.name)}</td></tr>
+          <tr><td style="padding:8px 0;border-bottom:1px solid #e2e8f0;color:#64748b;">Phone</td><td style="padding:8px 0;border-bottom:1px solid #e2e8f0;text-align:right;">${escapeHtml(enquiry.phone)}</td></tr>
+          <tr><td style="padding:8px 0;border-bottom:1px solid #e2e8f0;color:#64748b;">Email</td><td style="padding:8px 0;border-bottom:1px solid #e2e8f0;text-align:right;">${escapeHtml(hasRealEmail ? enquiry.email : 'Not provided')}</td></tr>
+          ${enquiry.bookingCode ? `<tr><td style="padding:8px 0;border-bottom:1px solid #e2e8f0;color:#64748b;">Booking Ref</td><td style="padding:8px 0;border-bottom:1px solid #e2e8f0;font-weight:700;text-align:right;">${escapeHtml(enquiry.bookingCode)}</td></tr>` : ''}
+          <tr><td style="padding:8px 0;color:#64748b;">Status</td><td style="padding:8px 0;font-weight:700;color:#102a43;text-align:right;">${escapeHtml(enquiry.status)}</td></tr>
+        </table>
+        <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px 14px;margin:14px 0;font-size:13px;color:#1e293b;line-height:1.5;">
+          <strong>Message:</strong><br/>${escapeHtml(enquiry.message)}
+        </div>
+        ${
+          actionLinks
+            ? buildActionButtonsHtml({
+                confirmUrl: actionLinks.confirmUrl,
+                rejectUrl: actionLinks.rejectUrl,
+                confirmLabel: 'Confirm Enquiry',
+                rejectLabel: 'Reject Enquiry',
+              })
+            : ''
+        }
+      </div>
+    </div>
+  `;
+}
+
+export async function dispatchNewEnquiryAdminEmail(
+  enquiryId: string,
+  baseUrl?: string
+): Promise<{ sent: boolean; skipped?: boolean; error?: string }> {
+  const lockKey = `new-enq:${enquiryId}`;
+  if (inFlightNotifications.has(lockKey)) {
+    return { sent: false, skipped: true };
+  }
+  inFlightNotifications.add(lockKey);
+
+  try {
+    const [enquiries, settings, adminEmail] = await Promise.all([
+      db.getAll('enquiries'),
+      db.getSettings(),
+      resolveAdminEmail(),
+    ]);
+    const enquiry = enquiries.find((e) => e.id === enquiryId);
+    if (!enquiry || !adminEmail?.includes('@')) {
+      return { sent: false, skipped: true };
+    }
+
+    const prevMeta = enquiry.emailNotifications || {};
+    if (prevMeta.adminNotificationSentAt) {
+      return { sent: false, skipped: true };
+    }
+
+    const resend = getResendClient();
+    if (!resend) {
+      const msg = 'RESEND_API_KEY is not configured in server environment';
+      await db.updateOneById('enquiries', enquiry.id, {
+        emailNotifications: { ...prevMeta, lastError: msg },
+      });
+      return { sent: false, error: msg };
+    }
+
+    const actionLinks =
+      enquiry.status === 'Pending'
+        ? await createActionLinksForTarget('enquiry', enquiry.id, baseUrl)
+        : null;
+    const fromEmail = resolveFromEmail(settings);
+    const result = await resend.emails.send({
+      from: fromEmail,
+      to: [adminEmail],
+      subject: `New Enquiry (${enquiry.source}) · ${enquiry.name} · ${enquiry.subject}`,
+      html: buildAdminNewEnquiryHtml(enquiry, settings, actionLinks),
+    });
+
+    const nowIso = new Date().toISOString();
+    if (result.error) {
+      await db.updateOneById('enquiries', enquiry.id, {
+        emailNotifications: { ...prevMeta, lastError: result.error.message },
+      });
+      return { sent: false, error: result.error.message };
+    }
+
+    await db.updateOneById('enquiries', enquiry.id, {
+      emailNotifications: {
+        ...prevMeta,
+        adminNotificationSentAt: nowIso,
+        lastError: undefined,
+      },
+    });
+    return { sent: true };
+  } catch (err) {
+    console.warn(`[Email] dispatchNewEnquiryAdminEmail exception:`, (err as Error).message);
+    return { sent: false, error: (err as Error).message };
+  } finally {
+    inFlightNotifications.delete(lockKey);
+  }
+}
+
+export async function dispatchEnquiryStatusEmail(
+  enquiryId: string,
+  newStatus: Enquiry['status']
+): Promise<{ sent: boolean; skipped?: boolean; error?: string }> {
+  const lockKey = `enq-status:${enquiryId}:${newStatus}`;
+  if (inFlightNotifications.has(lockKey)) {
+    return { sent: false, skipped: true };
+  }
+  inFlightNotifications.add(lockKey);
+
+  try {
+    const [enquiries, settings] = await Promise.all([db.getAll('enquiries'), db.getSettings()]);
+    const enquiry = enquiries.find((e) => e.id === enquiryId);
+    if (
+      !enquiry ||
+      !enquiry.email?.includes('@') ||
+      enquiry.email === 'not-provided@vizagjagantravels.com'
+    ) {
+      return { sent: false, skipped: true };
+    }
+
+    const prevMeta = enquiry.emailNotifications || {};
+    if (prevMeta.lastStatusNotified === newStatus) {
+      return { sent: false, skipped: true };
+    }
+
+    const resend = getResendClient();
+    if (!resend) {
+      const msg = 'RESEND_API_KEY is not configured in server environment';
+      return { sent: false, error: msg };
+    }
+
+    const company = settings.companyName || 'Vizag Jagan Travels';
+    const supportPhone = settings.supportPhone || '+91 891 274 8800';
+    const supportEmail = settings.supportEmail || DEFAULT_ADMIN_EMAIL;
+    const isConfirmed = newStatus === 'Confirmed' || newStatus === 'Resolved';
+    const isRejected = newStatus === 'Rejected';
+    const accentColor = isConfirmed ? '#047857' : isRejected ? '#b91c1c' : '#1d4ed8';
+    const headline = isConfirmed
+      ? `Your Travel Enquiry Has Been ${newStatus}`
+      : isRejected
+      ? `Update on Your Travel Enquiry: ${newStatus}`
+      : `Enquiry Status Updated: ${newStatus}`;
+    const bodyCopy = isConfirmed
+      ? `Good news! Our dispatch team has reviewed and confirmed your enquiry (${enquiry.subject}). A coordinator will follow up with final trip arrangements shortly.`
+      : isRejected
+      ? `Thank you for contacting ${company}. Unfortunately, we are unable to fulfill your enquiry (${enquiry.subject}) as submitted. Please call our dispatch desk for alternative fleet options.`
+      : `Your enquiry (${enquiry.subject}) status has been updated to ${newStatus}.`;
+
+    const html = `
+      <div style="font-family:Arial,Helvetica,sans-serif;max-width:600px;margin:0 auto;background:#ffffff;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;">
+        <div style="background:${accentColor};color:#ffffff;padding:20px 24px;">
+          <h2 style="margin:0;font-size:19px;">${escapeHtml(headline)}</h2>
+          <p style="margin:5px 0 0;font-size:13px;color:#f1f5f9;">${escapeHtml(company)}</p>
+        </div>
+        <div style="padding:24px;">
+          <p style="margin:0 0 12px;font-size:15px;color:#0f172a;">Dear <strong>${escapeHtml(enquiry.name)}</strong>,</p>
+          <p style="margin:0 0 14px;font-size:14px;line-height:1.6;color:#334155;">${escapeHtml(bodyCopy)}</p>
+          <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px 14px;font-size:13px;color:#1e293b;">
+            <div><strong>Enquiry ID:</strong> ${escapeHtml(enquiry.id)}</div>
+            <div><strong>Subject:</strong> ${escapeHtml(enquiry.subject)}</div>
+            <div><strong>Status:</strong> ${escapeHtml(newStatus)}</div>
+          </div>
+          <p style="margin:16px 0 0;font-size:13px;color:#475569;">
+            Questions? Call <strong>${escapeHtml(supportPhone)}</strong> or email <strong>${escapeHtml(supportEmail)}</strong>.
+          </p>
+        </div>
+      </div>
+    `;
+
+    const result = await resend.emails.send({
+      from: resolveFromEmail(settings),
+      to: [enquiry.email],
+      subject: `Enquiry ${newStatus} · ${enquiry.subject} · ${company}`,
+      html,
+    });
+
+    if (result.error) {
+      await db.updateOneById('enquiries', enquiry.id, {
+        emailNotifications: { ...prevMeta, lastError: result.error.message },
+      });
+      return { sent: false, error: result.error.message };
+    }
+
+    const nowIso = new Date().toISOString();
+    await db.updateOneById('enquiries', enquiry.id, {
+      emailNotifications: {
+        ...prevMeta,
         lastStatusNotified: newStatus,
         lastStatusNotifiedAt: nowIso,
         lastError: undefined,
       },
     });
-
     return { sent: true };
   } catch (err) {
-    console.warn(`[Email] Status email exception:`, (err as Error).message);
+    console.warn(`[Email] dispatchEnquiryStatusEmail exception:`, (err as Error).message);
     return { sent: false, error: (err as Error).message };
   } finally {
     inFlightNotifications.delete(lockKey);

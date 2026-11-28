@@ -37,6 +37,20 @@ export interface AdminCredentialRecord {
   updatedAt?: string;
 }
 
+export interface AdminActionTokenRecord {
+  id: string;
+  tokenHash: string;
+  targetType: 'booking' | 'enquiry';
+  targetId: string;
+  action: 'confirm' | 'reject';
+  expiresAt: string;
+  usedAt?: string;
+  usedByEmail?: string;
+  usedByRole?: string;
+  decisionResult?: string;
+  createdAt: string;
+}
+
 export interface DatabaseSchema {
   vehicles: Vehicle[];
   drivers: Driver[];
@@ -52,6 +66,7 @@ export interface DatabaseSchema {
   pricing: PricingConfig;
   settings: WebsiteSettings;
   adminCredentials: AdminCredentialRecord[];
+  adminActionTokens: AdminActionTokenRecord[];
 }
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
@@ -1531,6 +1546,7 @@ function createDefaultDb(): DatabaseSchema {
     pricing: structuredClone(SEED_PRICING),
     settings: structuredClone(SEED_SETTINGS),
     adminCredentials: [],
+    adminActionTokens: [],
   };
 }
 
@@ -1653,6 +1669,10 @@ class HybridDatabase {
         (this.localCache as unknown as { __adminResetV1?: boolean }).__adminResetV1 = true;
         dirty = true;
       }
+      if (!Array.isArray(this.localCache.adminActionTokens)) {
+        this.localCache.adminActionTokens = [];
+        dirty = true;
+      }
       if (Array.isArray(this.localCache.adminCredentials)) {
         for (const cred of this.localCache.adminCredentials) {
           if (!cred.adminEmailMigrated) {
@@ -1741,6 +1761,43 @@ class HybridDatabase {
       return true;
     }
     return false;
+  }
+
+  async consumeAdminActionTokensForTarget(
+    targetType: 'booking' | 'enquiry',
+    targetId: string,
+    meta: { usedByEmail?: string; usedByRole?: string; decisionResult: string }
+  ): Promise<void> {
+    await this.init();
+    const nowIso = new Date().toISOString();
+    if (this.mongoDb) {
+      await this.mongoDb.collection('adminActionTokens').updateMany(
+        { targetType, targetId, usedAt: { $exists: false } },
+        {
+          $set: {
+            usedAt: nowIso,
+            usedByEmail: meta.usedByEmail,
+            usedByRole: meta.usedByRole,
+            decisionResult: meta.decisionResult,
+          },
+        }
+      );
+      return;
+    }
+    const tokens = this.localCache!.adminActionTokens || [];
+    let dirty = false;
+    for (const t of tokens) {
+      if (t.targetType === targetType && t.targetId === targetId && !t.usedAt) {
+        t.usedAt = nowIso;
+        t.usedByEmail = meta.usedByEmail;
+        t.usedByRole = meta.usedByRole;
+        t.decisionResult = meta.decisionResult;
+        dirty = true;
+      }
+    }
+    if (dirty) {
+      this.flushLocal();
+    }
   }
 
   async getPricing(): Promise<PricingConfig> {

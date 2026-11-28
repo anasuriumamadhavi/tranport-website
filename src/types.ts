@@ -190,8 +190,15 @@ export interface Enquiry {
   message: string;
   source: 'Contact Form' | 'WhatsApp' | 'Custom Quote' | 'Support';
   bookingCode?: string;
-  status: 'Pending' | 'Responded' | 'Resolved';
+  status: 'Pending' | 'Confirmed' | 'Rejected' | 'Responded' | 'Resolved';
+  emailNotifications?: {
+    adminNotificationSentAt?: string;
+    lastStatusNotified?: 'Pending' | 'Confirmed' | 'Rejected' | 'Responded' | 'Resolved';
+    lastStatusNotifiedAt?: string;
+    lastError?: string;
+  };
   createdAt: string;
+  updatedAt?: string;
 }
 
 export interface Review {

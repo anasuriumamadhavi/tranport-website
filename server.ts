@@ -25,7 +25,10 @@ import {
 import { calculateFareEstimate } from './server/pricing';
 import {
   dispatchBookingStatusEmail,
+  dispatchEnquiryStatusEmail,
   dispatchNewBookingEmails,
+  dispatchNewEnquiryAdminEmail,
+  hashAdminActionToken,
   sendPasswordResetOtpEmail,
 } from './server/email';
 import {
@@ -70,6 +73,31 @@ async function runEmailSafely<T>(promise: Promise<T>, timeoutMs = 5000): Promise
     console.warn('[Email] Non-blocking dispatch error:', (err as Error).message);
     return null;
   }
+}
+
+const inFlightActionDecisions = new Set<string>();
+
+function resolveRequestBaseUrl(req: Request): string {
+  const rawProto = asString(req.headers['x-forwarded-proto'], 16).split(',')[0].trim().toLowerCase();
+  const proto = rawProto === 'http' || rawProto === 'https' ? rawProto : req.protocol === 'https' ? 'https' : 'http';
+  const rawHost = (asString(req.headers['x-forwarded-host'], 160) || asString(req.get('host'), 160))
+    .split(',')[0]
+    .trim();
+  if (rawHost && /^[a-zA-Z0-9.-]+(:\d{1,5})?$/.test(rawHost)) {
+    return `${proto}://${rawHost}`;
+  }
+  const appUrl = process.env.APP_URL?.trim();
+  if (appUrl && appUrl !== 'MY_APP_URL') {
+    try {
+      const parsed = new URL(appUrl);
+      if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+        return `${parsed.protocol}//${parsed.host}`;
+      }
+    } catch {
+      // ignore invalid APP_URL
+    }
+  }
+  return `http://localhost:${PORT}`;
 }
 
 function asString(val: unknown, maxLen = 400): string {
@@ -511,6 +539,7 @@ async function startServer() {
       createdAt: new Date().toISOString(),
     };
     await db.insertOne('enquiries', enquiry);
+    await runEmailSafely(dispatchNewEnquiryAdminEmail(enquiry.id, resolveRequestBaseUrl(req)));
     res.status(201).json({ enquiry, message: 'Enquiry received. Our dispatch team will reach out shortly.' });
   });
 
@@ -1368,7 +1397,7 @@ async function startServer() {
     await db.insertOne('bookings', booking);
 
     if (paymentMode === 'Pay Later') {
-      await runEmailSafely(dispatchNewBookingEmails(booking.id));
+      await runEmailSafely(dispatchNewBookingEmails(booking.id, resolveRequestBaseUrl(req)));
     }
 
     res.status(201).json({
@@ -1638,7 +1667,7 @@ async function startServer() {
       updatedAt: new Date().toISOString(),
     });
 
-    await runEmailSafely(dispatchNewBookingEmails(booking.id));
+    await runEmailSafely(dispatchNewBookingEmails(booking.id, resolveRequestBaseUrl(req)));
 
     res.json({
       verified: true,
@@ -1995,12 +2024,27 @@ async function startServer() {
     if (
       updated &&
       req.body.bookingStatus &&
-      updated.bookingStatus !== existing.bookingStatus &&
-      (['Confirmed', 'Driver Assigned', 'Rejected', 'Cancelled'] as BookingStatus[]).includes(
-        updated.bookingStatus
-      )
+      updated.bookingStatus !== existing.bookingStatus
     ) {
-      await runEmailSafely(dispatchBookingStatusEmail(updated.id, updated.bookingStatus));
+      if (updated.bookingStatus !== 'Pending') {
+        const actor = (req as AuthenticatedRequest).user;
+        await db.consumeAdminActionTokensForTarget('booking', updated.id, {
+          usedByEmail: actor?.email,
+          usedByRole: actor?.role,
+          decisionResult: `dashboard:${updated.bookingStatus}`,
+        });
+      }
+      if (
+        (['Confirmed', 'Driver Assigned', 'Rejected', 'Cancelled'] as BookingStatus[]).includes(
+          updated.bookingStatus
+        )
+      ) {
+        await runEmailSafely(
+          dispatchBookingStatusEmail(updated.id, updated.bookingStatus, {
+            notifyAdminWithInvoice: updated.bookingStatus === 'Confirmed',
+          })
+        );
+      }
     }
     res.json({ booking: updated });
   });
@@ -2611,15 +2655,310 @@ async function startServer() {
     res.json({ enquiries: enquiries.sort((a, b) => b.createdAt.localeCompare(a.createdAt)) });
   });
 
-  app.patch('/api/admin/enquiries/:id', requireAdmin, async (req: Request, res: Response) => {
+  app.patch('/api/admin/enquiries/:id', requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
     const id = asString(req.params.id, 60);
     const status = asString(req.body.status, 30) as Enquiry['status'];
-    const updated = await db.updateOneById('enquiries', id, { status });
-    if (!updated) {
+    const allowedStatuses: Enquiry['status'][] = ['Pending', 'Confirmed', 'Rejected', 'Responded', 'Resolved'];
+    if (!allowedStatuses.includes(status)) {
+      res.status(400).json({ error: 'Invalid enquiry status' });
+      return;
+    }
+
+    const existingList = await db.getAll('enquiries');
+    const existing = existingList.find((e) => e.id === id);
+    if (!existing) {
       res.status(404).json({ error: 'Enquiry not found' });
       return;
     }
+
+    const updated = await db.updateOneById('enquiries', id, {
+      status,
+      updatedAt: new Date().toISOString(),
+    });
+    if (updated && status !== existing.status) {
+      if (status !== 'Pending') {
+        await db.consumeAdminActionTokensForTarget('enquiry', updated.id, {
+          usedByEmail: req.user?.email,
+          usedByRole: req.user?.role,
+          decisionResult: `dashboard:${status}`,
+        });
+      }
+      if (status === 'Confirmed' || status === 'Rejected' || status === 'Responded' || status === 'Resolved') {
+        await runEmailSafely(dispatchEnquiryStatusEmail(updated.id, status));
+      }
+    }
     res.json({ enquiry: updated });
+  });
+
+  // Single-use expiring Email Action Links (Admin-verified approval/rejection)
+  app.get('/api/admin/action-links/check', async (req: Request, res: Response) => {
+    const rawToken = asString(req.query.token, 160);
+    if (!/^[a-f0-9]{32,128}$/i.test(rawToken)) {
+      res.status(400).json({ status: 'invalid', message: 'Invalid action link token.' });
+      return;
+    }
+    const tokenHash = hashAdminActionToken(rawToken);
+    const tokens = await db.getAll('adminActionTokens');
+    const record = tokens.find((t) => t.tokenHash === tokenHash);
+    if (!record) {
+      res.status(404).json({ status: 'invalid', message: 'Action link not found.' });
+      return;
+    }
+    if (record.usedAt) {
+      res.json({
+        status: 'used',
+        targetType: record.targetType,
+        action: record.action,
+        message: 'This decision link has already been used.',
+      });
+      return;
+    }
+    if (Date.now() > Date.parse(record.expiresAt)) {
+      res.json({
+        status: 'expired',
+        targetType: record.targetType,
+        action: record.action,
+        message: 'This action link has expired (48-hour limit).',
+      });
+      return;
+    }
+    res.json({
+      status: 'ready',
+      targetType: record.targetType,
+      action: record.action,
+      expiresAt: record.expiresAt,
+      message: 'Administrator sign-in required to review and execute this action.',
+    });
+  });
+
+  app.get('/api/admin/action-links/preview', requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+    const rawToken = asString(req.query.token, 160);
+    if (!/^[a-f0-9]{32,128}$/i.test(rawToken)) {
+      res.status(400).json({ error: 'Invalid action token format.' });
+      return;
+    }
+    const tokenHash = hashAdminActionToken(rawToken);
+    const tokens = await db.getAll('adminActionTokens');
+    const record = tokens.find((t) => t.tokenHash === tokenHash);
+    if (!record) {
+      res.status(404).json({ error: 'Action link was not found.' });
+      return;
+    }
+
+    const isExpired = Date.now() > Date.parse(record.expiresAt);
+    const isUsed = Boolean(record.usedAt);
+
+    if (record.targetType === 'booking') {
+      const bookings = await db.getAll('bookings');
+      const booking = bookings.find((b) => b.id === record.targetId);
+      if (!booking) {
+        res.status(404).json({ error: 'Associated booking no longer exists.' });
+        return;
+      }
+      const alreadyProcessed = isUsed || booking.bookingStatus !== 'Pending';
+      let conflictError: string | null = null;
+      if (!alreadyProcessed && record.action === 'confirm') {
+        const conflict = hasVehicleBookingConflict(
+          bookings,
+          booking.vehicleId,
+          booking.journeyDate,
+          booking.returnDate,
+          booking.journeyTime,
+          booking.tripType,
+          booking.id
+        );
+        if (conflict) {
+          conflictError = `Vehicle already reserved by overlapping booking ${conflict.bookingCode}.`;
+        }
+      }
+      res.json({
+        targetType: 'booking',
+        action: record.action,
+        expiresAt: record.expiresAt,
+        isExpired,
+        isUsed,
+        alreadyProcessed,
+        decisionResult: record.decisionResult,
+        usedByEmail: record.usedByEmail,
+        conflictError,
+        booking,
+      });
+      return;
+    }
+
+    const enquiries = await db.getAll('enquiries');
+    const enquiry = enquiries.find((e) => e.id === record.targetId);
+    if (!enquiry) {
+      res.status(404).json({ error: 'Associated enquiry no longer exists.' });
+      return;
+    }
+    const alreadyProcessed = isUsed || enquiry.status !== 'Pending';
+    res.json({
+      targetType: 'enquiry',
+      action: record.action,
+      expiresAt: record.expiresAt,
+      isExpired,
+      isUsed,
+      alreadyProcessed,
+      decisionResult: record.decisionResult,
+      usedByEmail: record.usedByEmail,
+      enquiry,
+    });
+  });
+
+  app.post('/api/admin/action-links/execute', requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+    const rl = checkRateLimit(`admin-action-exec:${req.ip}`, 30);
+    if (!rl.allowed) {
+      res.status(429).json({ error: `Too many requests. Try again in ${rl.retryAfterSeconds}s.` });
+      return;
+    }
+
+    const rawToken = asString(req.body.token, 160);
+    if (!/^[a-f0-9]{32,128}$/i.test(rawToken)) {
+      res.status(400).json({ error: 'Invalid action token format.' });
+      return;
+    }
+
+    const tokenHash = hashAdminActionToken(rawToken);
+    const tokens = await db.getAll('adminActionTokens');
+    const record = tokens.find((t) => t.tokenHash === tokenHash);
+    if (!record) {
+      res.status(404).json({ error: 'Action link was not found.' });
+      return;
+    }
+    if (record.usedAt) {
+      res.status(409).json({ error: 'This action link has already been used. Duplicate action blocked.' });
+      return;
+    }
+    if (Date.now() > Date.parse(record.expiresAt)) {
+      res.status(410).json({ error: 'This action link has expired.' });
+      return;
+    }
+
+    const lockKey = `${record.targetType}:${record.targetId}`;
+    if (inFlightActionDecisions.has(lockKey)) {
+      res.status(409).json({ error: 'Another decision for this record is already in progress.' });
+      return;
+    }
+    inFlightActionDecisions.add(lockKey);
+
+    try {
+      if (record.targetType === 'booking') {
+        const bookings = await db.getAll('bookings');
+        const booking = bookings.find((b) => b.id === record.targetId);
+        if (!booking) {
+          res.status(404).json({ error: 'Booking not found.' });
+          return;
+        }
+        if (booking.bookingStatus !== 'Pending') {
+          await db.consumeAdminActionTokensForTarget('booking', booking.id, {
+            usedByEmail: req.user?.email,
+            usedByRole: req.user?.role,
+            decisionResult: `already:${booking.bookingStatus}`,
+          });
+          res.status(409).json({
+            error: `Booking #${booking.bookingCode} is already ${booking.bookingStatus}. Duplicate approvals/rejections are blocked.`,
+          });
+          return;
+        }
+
+        const nextStatus: BookingStatus = record.action === 'confirm' ? 'Confirmed' : 'Rejected';
+        if (nextStatus === 'Confirmed') {
+          const conflict = hasVehicleBookingConflict(
+            bookings,
+            booking.vehicleId,
+            booking.journeyDate,
+            booking.returnDate,
+            booking.journeyTime,
+            booking.tripType,
+            booking.id
+          );
+          if (conflict) {
+            res.status(409).json({
+              error: `Cannot confirm booking: vehicle overlaps with ${conflict.bookingCode}.`,
+            });
+            return;
+          }
+        }
+
+        const updatedBooking = await db.updateOneById('bookings', booking.id, {
+          bookingStatus: nextStatus,
+          updatedAt: new Date().toISOString(),
+        });
+
+        await db.consumeAdminActionTokensForTarget('booking', booking.id, {
+          usedByEmail: req.user?.email,
+          usedByRole: req.user?.role,
+          decisionResult: `email-action:${nextStatus}`,
+        });
+
+        const emailStatus = await runEmailSafely(
+          dispatchBookingStatusEmail(booking.id, nextStatus, {
+            notifyAdminWithInvoice: nextStatus === 'Confirmed',
+          })
+        );
+
+        res.json({
+          executed: true,
+          targetType: 'booking',
+          action: record.action,
+          booking: updatedBooking,
+          emailStatus,
+          message:
+            nextStatus === 'Confirmed'
+              ? `Booking #${booking.bookingCode} confirmed. Status update and PDF invoice dispatched.`
+              : `Booking #${booking.bookingCode} rejected. Status update email dispatched to customer.`,
+        });
+        return;
+      }
+
+      // Enquiry action execution
+      const enquiries = await db.getAll('enquiries');
+      const enquiry = enquiries.find((e) => e.id === record.targetId);
+      if (!enquiry) {
+        res.status(404).json({ error: 'Enquiry not found.' });
+        return;
+      }
+      if (enquiry.status !== 'Pending') {
+        await db.consumeAdminActionTokensForTarget('enquiry', enquiry.id, {
+          usedByEmail: req.user?.email,
+          usedByRole: req.user?.role,
+          decisionResult: `already:${enquiry.status}`,
+        });
+        res.status(409).json({
+          error: `Enquiry is already marked as ${enquiry.status}. Duplicate actions are blocked.`,
+        });
+        return;
+      }
+
+      const nextStatus: Enquiry['status'] = record.action === 'confirm' ? 'Confirmed' : 'Rejected';
+      const updatedEnquiry = await db.updateOneById('enquiries', enquiry.id, {
+        status: nextStatus,
+        updatedAt: new Date().toISOString(),
+      });
+
+      await db.consumeAdminActionTokensForTarget('enquiry', enquiry.id, {
+        usedByEmail: req.user?.email,
+        usedByRole: req.user?.role,
+        decisionResult: `email-action:${nextStatus}`,
+      });
+
+      const emailStatus = await runEmailSafely(dispatchEnquiryStatusEmail(enquiry.id, nextStatus));
+
+      res.json({
+        executed: true,
+        targetType: 'enquiry',
+        action: record.action,
+        enquiry: updatedEnquiry,
+        emailStatus,
+        message:
+          nextStatus === 'Confirmed'
+            ? `Enquiry confirmed and customer notification sent.`
+            : `Enquiry rejected and customer notification sent.`,
+      });
+    } finally {
+      inFlightActionDecisions.delete(lockKey);
+    }
   });
 
   // Reports

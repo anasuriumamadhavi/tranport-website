@@ -57,6 +57,7 @@ import {
 
 interface AdminDashboardProps {
   token: string;
+  initialTab?: AdminTab;
   onFleetUpdated: () => void;
   onSessionUpdated?: (token: string, user: UserProfile) => void;
 }
@@ -148,10 +149,11 @@ const ALL_CATEGORIES: VehicleCategory[] = [
 
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   token,
+  initialTab,
   onFleetUpdated,
   onSessionUpdated,
 }) => {
-  const [tab, setTab] = useState<AdminTab>('overview');
+  const [tab, setTab] = useState<AdminTab>(initialTab || 'overview');
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -323,7 +325,28 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   };
 
   useEffect(() => {
+    if (initialTab) {
+      setTab(initialTab);
+    }
+  }, [initialTab]);
+
+  useEffect(() => {
     void loadAllAdminData();
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') {
+        void loadAllAdminData();
+      }
+    };
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        void loadAllAdminData();
+      }
+    }, 20000);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, [token]);
 
   const handleUpdateAdminCredentials = async (e: React.FormEvent) => {
@@ -1932,6 +1955,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       className="px-3 py-1.5 text-xs font-semibold border border-slate-200 rounded-lg shrink-0"
                     >
                       <option value="Pending">Pending</option>
+                      <option value="Confirmed">Confirmed</option>
+                      <option value="Rejected">Rejected</option>
                       <option value="Responded">Responded</option>
                       <option value="Resolved">Resolved</option>
                     </select>

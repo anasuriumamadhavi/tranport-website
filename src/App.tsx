@@ -34,6 +34,7 @@ import { VehicleDetailsModal } from './components/VehicleDetailsModal';
 import { BookingPrefill, BookingWizard } from './components/BookingWizard';
 import { CustomerDashboard } from './components/CustomerDashboard';
 import { AdminDashboard } from './components/AdminDashboard';
+import { AdminActionPage } from './components/AdminActionPage';
 import { AuthView } from './components/AuthView';
 import { ServicesPage } from './components/ServicesPage';
 import { GalleryPage } from './components/GalleryPage';
@@ -135,8 +136,23 @@ const SERVICES_LIST: Array<{
   },
 ];
 
+function extractInitialAdminActionToken(): string | null {
+  try {
+    const raw = new URLSearchParams(window.location.search).get('adminAction')?.trim() || '';
+    return /^[a-f0-9]{32,128}$/i.test(raw) ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
 export default function App() {
-  const [activePage, setActivePage] = useState<ActivePage>('home');
+  const [pendingAdminActionToken, setPendingAdminActionToken] = useState<string | null>(() =>
+    extractInitialAdminActionToken()
+  );
+  const [activePage, setActivePage] = useState<ActivePage>(() =>
+    extractInitialAdminActionToken() ? 'admin-action' : 'home'
+  );
+  const [adminPreferredTab, setAdminPreferredTab] = useState<'overview' | 'bookings' | 'enquiries'>('overview');
   const [quotaExceeded, setQuotaExceeded] = useState(false);
 
   // Auth held strictly in React memory
@@ -1494,12 +1510,48 @@ export default function App() {
           {activePage === 'admin' && token && user?.role === 'admin' && (
             <AdminDashboard
               token={token}
+              initialTab={adminPreferredTab}
               onFleetUpdated={() => {
                 void loadPublicData();
               }}
               onSessionUpdated={(newToken, updatedAdmin) => {
                 setToken(newToken);
                 setUser(updatedAdmin);
+              }}
+            />
+          )}
+
+          {/* EMAIL ACTION LINK APPROVAL / REJECTION PAGE */}
+          {activePage === 'admin-action' && pendingAdminActionToken && (
+            <AdminActionPage
+              actionToken={pendingAdminActionToken}
+              user={user}
+              token={token}
+              onAdminAuthenticated={(newToken, loggedInAdmin) => {
+                setToken(newToken);
+                setUser(loggedInAdmin);
+              }}
+              onLogout={() => {
+                setToken(null);
+                setUser(null);
+              }}
+              onOpenDashboard={(preferredTab) => {
+                setPendingAdminActionToken(null);
+                setAdminPreferredTab(preferredTab);
+                if (window.location.search.includes('adminAction=')) {
+                  window.history.replaceState({}, '', window.location.pathname);
+                }
+                void loadPublicData();
+                setActivePage(token && user?.role === 'admin' ? 'admin' : 'login');
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }}
+              onExit={() => {
+                setPendingAdminActionToken(null);
+                if (window.location.search.includes('adminAction=')) {
+                  window.history.replaceState({}, '', window.location.pathname);
+                }
+                setActivePage('home');
+                window.scrollTo({ top: 0, behavior: 'smooth' });
               }}
             />
           )}

@@ -13,6 +13,7 @@ export type ActivePage =
   | 'booking'
   | 'customer'
   | 'admin'
+  | 'admin-action'
   | 'login';
 
 interface HeaderProps {
