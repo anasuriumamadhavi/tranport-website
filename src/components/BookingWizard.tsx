@@ -158,6 +158,7 @@ export const BookingWizard: React.FC<BookingWizardProps> = ({
   );
   const [testCheckoutOrder, setTestCheckoutOrder] = useState<RazorpayOrderResponse | null>(null);
   const [verifyingPayment, setVerifyingPayment] = useState(false);
+  const [stepperHint, setStepperHint] = useState<string | null>(null);
 
   const [brokenImages, setBrokenImages] = useState<Record<string, boolean>>({});
 
@@ -198,12 +199,14 @@ export const BookingWizard: React.FC<BookingWizardProps> = ({
 
   const selectedVehicle = availableVehicles.find((v) => v.id === selectedVehicleId) || null;
 
-  const fetchAvailableVehicles = async () => {
+  const fetchAvailableVehicles = async (): Promise<boolean> => {
     if (!pickup.address.trim() || !drop.address.trim() || !journeyDate) {
       setAvailabilityError('Please enter pickup location, destination, and journey date.');
-      return;
+      setStage(1);
+      return false;
     }
     setAvailabilityError(null);
+    setStepperHint(null);
     setLoadingVehicles(true);
     try {
       const qs = new URLSearchParams({
@@ -226,8 +229,10 @@ export const BookingWizard: React.FC<BookingWizardProps> = ({
         }
       }
       setStage(2);
+      return true;
     } catch (err) {
       setAvailabilityError((err as Error).message);
+      return false;
     } finally {
       setLoadingVehicles(false);
     }
@@ -235,6 +240,7 @@ export const BookingWizard: React.FC<BookingWizardProps> = ({
 
   const handleSelectVehicle = async (veh: AvailableVehicleResult) => {
     if (!veh.isAvailableForDates) return;
+    setStepperHint(null);
     setSelectedVehicleId(veh.id);
     setFareEstimate(veh.fareEstimate);
     try {
@@ -255,6 +261,69 @@ export const BookingWizard: React.FC<BookingWizardProps> = ({
       // Keep list estimate if refresh fails
     }
     setStage(3);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleStepperClick = async (targetStage: 1 | 2 | 3 | 4) => {
+    setStepperHint(null);
+    if (targetStage === 1) {
+      setStage(1);
+      return;
+    }
+    if (targetStage === 2) {
+      if (stage !== 1 && availableVehicles.length > 0) {
+        setStage(2);
+        return;
+      }
+      await fetchAvailableVehicles();
+      return;
+    }
+    if (targetStage === 3) {
+      if (selectedVehicle && fareEstimate) {
+        setStage(3);
+        return;
+      }
+      if (stage === 1 || availableVehicles.length === 0) {
+        const ok = await fetchAvailableVehicles();
+        if (ok) {
+          setStepperHint('Select a vehicle below to review Fare & Passenger Details.');
+        }
+      } else {
+        setStepperHint('Please select an available vehicle below to continue to Fare & Details.');
+      }
+      return;
+    }
+    if (targetStage === 4) {
+      if (createdBooking) {
+        setStage(4);
+        return;
+      }
+      if (stage === 3 && selectedVehicle && fareEstimate) {
+        setStepperHint('Click Submit Booking Request below to confirm your reservation.');
+        document.getElementById('step-12-payment-actions')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        return;
+      }
+      if (stage === 1 || availableVehicles.length === 0) {
+        const ok = await fetchAvailableVehicles();
+        if (ok) {
+          setStepperHint('Select a vehicle and submit Step 12 to confirm your booking.');
+        }
+      } else {
+        setStepperHint('Select a vehicle first, then submit Step 12 to reach confirmation.');
+      }
+    }
+  };
+
+  const handleResetWizard = () => {
+    setCreatedBooking(null);
+    setTestCheckoutOrder(null);
+    setSubmitError(null);
+    setStepperHint(null);
+    setSelectedVehicleId('');
+    setFareEstimate(null);
+    setNotes('');
+    setStage(1);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const handleSubmitBooking = async (mode: 'Advance' | 'Full' | 'Pay Later') => {
@@ -304,7 +373,9 @@ export const BookingWizard: React.FC<BookingWizardProps> = ({
       }
 
       if (mode === 'Pay Later') {
+        setStepperHint(null);
         setStage(4);
+        window.scrollTo({ top: 0, behavior: 'smooth' });
         return;
       }
 
@@ -421,31 +492,43 @@ export const BookingWizard: React.FC<BookingWizardProps> = ({
             </div>
             <div className="flex flex-wrap items-center gap-2">
               {[
-                { num: 1, title: '1–7. Trip & Route' },
-                { num: 2, title: '8–9. Select Vehicle' },
-                { num: 3, title: '10–11. Fare & Details' },
-                { num: 4, title: '12. Confirmed' },
-              ].map((s) => (
-                <button
-                  key={s.num}
-                  type="button"
-                  disabled={s.num > stage && !(s.num === 4 && createdBooking)}
-                  onClick={() => {
-                    if (s.num < stage) setStage(s.num as 1 | 2 | 3 | 4);
-                  }}
-                  className={`px-3 py-2 rounded-lg text-xs font-semibold whitespace-nowrap transition-colors ${
-                    stage === s.num
-                      ? 'bg-[#102A43] text-white'
-                      : stage > s.num
-                      ? 'bg-emerald-50 text-emerald-800 border border-emerald-200 cursor-pointer'
-                      : 'bg-[#F5F7FA] text-slate-400'
-                  }`}
-                >
-                  {s.title}
-                </button>
-              ))}
+                { num: 1 as const, title: '1–7. Trip & Route' },
+                { num: 2 as const, title: '8–9. Select Vehicle' },
+                { num: 3 as const, title: '10–11. Fare & Details' },
+                { num: 4 as const, title: '12. Confirmed' },
+              ].map((s) => {
+                const isActive = stage === s.num;
+                const isDone =
+                  stage > s.num ||
+                  (s.num === 2 && availableVehicles.length > 0 && stage !== 2) ||
+                  (s.num === 3 && Boolean(selectedVehicle && fareEstimate) && stage !== 3) ||
+                  (s.num === 4 && Boolean(createdBooking) && stage !== 4);
+
+                return (
+                  <button
+                    key={s.num}
+                    type="button"
+                    disabled={loadingVehicles}
+                    onClick={() => void handleStepperClick(s.num)}
+                    className={`px-3 py-2 rounded-lg text-xs font-semibold whitespace-nowrap transition-colors cursor-pointer ${
+                      isActive
+                        ? 'bg-[#102A43] text-white shadow-xs'
+                        : isDone
+                        ? 'bg-emerald-50 text-emerald-800 border border-emerald-200 hover:bg-emerald-100'
+                        : 'bg-[#F5F7FA] text-slate-600 border border-slate-200 hover:bg-slate-200/70 hover:text-[#102A43]'
+                    }`}
+                  >
+                    {s.title}
+                  </button>
+                );
+              })}
             </div>
           </div>
+          {stepperHint && (
+            <p className="mt-3 text-xs font-medium text-[#102A43] bg-blue-50 border border-blue-200 rounded-lg px-3.5 py-2">
+              {stepperHint}
+            </p>
+          )}
         </div>
 
         {/* STAGE 1: Steps 1 to 7 */}
@@ -814,19 +897,18 @@ export const BookingWizard: React.FC<BookingWizardProps> = ({
               )}
 
               {/* Step 12 Payment Actions */}
-              <div className="pt-4 border-t border-slate-200 space-y-3">
+              <div id="step-12-payment-actions" className="pt-4 border-t border-slate-200 space-y-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <p className="text-sm font-bold text-[#102A43]">Step 12 · Confirm Booking & Payment</p>
                   {!allowOnlinePayment && (
-                    <span className="text-[11px] font-medium text-amber-800">
-                      Pre-pay unavailable · Direct dispatch selected
+                    <span className="text-[11px] font-medium text-emerald-800 bg-emerald-50 border border-emerald-200 px-2.5 py-0.5 rounded-md">
+                      Direct Dispatch Confirmation
                     </span>
                   )}
                 </div>
                 {!allowOnlinePayment && (
                   <p className="text-xs text-slate-600 bg-[#F5F7FA] border border-slate-200 rounded-lg px-3.5 py-2.5">
-                    Online pre-payment is not available right now. Please click{' '}
-                    <strong className="text-[#102A43]">Submit Booking Request</strong> below to confirm your vehicle directly with our dispatch team.
+                    Confirm directly with our dispatch team now and pay at pickup or trip completion.
                   </p>
                 )}
                 {maintenanceMode && (
@@ -839,77 +921,61 @@ export const BookingWizard: React.FC<BookingWizardProps> = ({
                     Guest booking is currently disabled. Please sign in to complete your reservation.
                   </p>
                 )}
-                <div className={`grid grid-cols-1 ${allowPayLater || !allowOnlinePayment ? 'sm:grid-cols-3' : 'sm:grid-cols-2'} gap-3`}>
-                  <button
-                    type="button"
-                    disabled={!allowOnlinePayment || submitting || maintenanceMode || (!allowGuestBooking && !user)}
-                    onClick={() => {
-                      if (allowOnlinePayment) void handleSubmitBooking('Advance');
-                    }}
-                    className={`px-4 py-3 text-xs font-semibold rounded-lg flex flex-col items-center justify-center gap-0.5 border transition-colors ${
-                      allowOnlinePayment
-                        ? 'bg-[#2563EB] hover:bg-[#1d4ed8] border-[#2563EB] text-white cursor-pointer disabled:opacity-60'
-                        : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'
-                    }`}
-                  >
-                    <span className="flex items-center gap-1.5">
-                      <CreditCard className="w-3.5 h-3.5" />
-                      Pre-Pay Advance
-                    </span>
-                    <span className={`font-mono tabular-nums text-[11px] ${allowOnlinePayment ? 'text-blue-100' : 'text-slate-400'}`}>
-                      {formatINR(fareEstimate.advancePayable)}
-                    </span>
-                    {!allowOnlinePayment && (
-                      <span className="text-[10px] font-medium text-amber-700 mt-0.5">
-                        Not Available Now
-                      </span>
-                    )}
-                  </button>
-
-                  <button
-                    type="button"
-                    disabled={!allowOnlinePayment || submitting || maintenanceMode || (!allowGuestBooking && !user)}
-                    onClick={() => {
-                      if (allowOnlinePayment) void handleSubmitBooking('Full');
-                    }}
-                    className={`px-4 py-3 text-xs font-semibold rounded-lg flex flex-col items-center justify-center gap-0.5 border transition-colors ${
-                      allowOnlinePayment
-                        ? 'bg-[#102A43] hover:bg-[#1a3c5e] border-[#102A43] text-white cursor-pointer disabled:opacity-60'
-                        : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'
-                    }`}
-                  >
-                    <span>Pre-Pay Full Fare</span>
-                    <span className={`font-mono tabular-nums text-[11px] ${allowOnlinePayment ? 'text-slate-300' : 'text-slate-400'}`}>
-                      {formatINR(fareEstimate.totalEstimatedFare)}
-                    </span>
-                    {!allowOnlinePayment && (
-                      <span className="text-[10px] font-medium text-amber-700 mt-0.5">
-                        Not Available Now
-                      </span>
-                    )}
-                  </button>
-
-                  {(allowPayLater || !allowOnlinePayment) && (
+                {allowOnlinePayment ? (
+                  <div className={`grid grid-cols-1 ${allowPayLater ? 'sm:grid-cols-3' : 'sm:grid-cols-2'} gap-3`}>
                     <button
                       type="button"
                       disabled={submitting || maintenanceMode || (!allowGuestBooking && !user)}
-                      onClick={() => handleSubmitBooking('Pay Later')}
-                      className={`px-4 py-3 text-xs font-semibold rounded-lg flex flex-col items-center justify-center gap-0.5 cursor-pointer disabled:opacity-60 transition-all ${
-                        !allowOnlinePayment
-                          ? 'bg-[#2563EB] hover:bg-[#1d4ed8] text-white ring-2 ring-[#2563EB]/25 shadow-sm'
-                          : 'bg-[#F5F7FA] hover:bg-slate-200 text-[#102A43] border border-slate-200'
-                      }`}
+                      onClick={() => void handleSubmitBooking('Advance')}
+                      className="px-4 py-3 text-xs font-semibold rounded-lg flex flex-col items-center justify-center gap-0.5 border transition-colors bg-[#2563EB] hover:bg-[#1d4ed8] border-[#2563EB] text-white cursor-pointer disabled:opacity-60"
                     >
                       <span className="flex items-center gap-1.5">
-                        <CheckCircle2 className="w-3.5 h-3.5" />
-                        {submitting && paymentOption === 'Pay Later' ? 'Submitting...' : 'Submit Booking Request'}
+                        <CreditCard className="w-3.5 h-3.5" />
+                        {submitting && paymentOption === 'Advance' ? 'Processing...' : 'Pre-Pay Advance'}
                       </span>
-                      <span className={`text-[11px] ${!allowOnlinePayment ? 'text-blue-100' : 'text-slate-500'}`}>
-                        {!allowOnlinePayment ? 'Selected · Confirm with Dispatch' : 'Confirm with Dispatch'}
+                      <span className="font-mono tabular-nums text-[11px] text-blue-100">
+                        {formatINR(fareEstimate.advancePayable)}
                       </span>
                     </button>
-                  )}
-                </div>
+
+                    <button
+                      type="button"
+                      disabled={submitting || maintenanceMode || (!allowGuestBooking && !user)}
+                      onClick={() => void handleSubmitBooking('Full')}
+                      className="px-4 py-3 text-xs font-semibold rounded-lg flex flex-col items-center justify-center gap-0.5 border transition-colors bg-[#102A43] hover:bg-[#1a3c5e] border-[#102A43] text-white cursor-pointer disabled:opacity-60"
+                    >
+                      <span>{submitting && paymentOption === 'Full' ? 'Processing...' : 'Pre-Pay Full Fare'}</span>
+                      <span className="font-mono tabular-nums text-[11px] text-slate-300">
+                        {formatINR(fareEstimate.totalEstimatedFare)}
+                      </span>
+                    </button>
+
+                    {allowPayLater && (
+                      <button
+                        type="button"
+                        disabled={submitting || maintenanceMode || (!allowGuestBooking && !user)}
+                        onClick={() => void handleSubmitBooking('Pay Later')}
+                        className="px-4 py-3 text-xs font-semibold rounded-lg flex flex-col items-center justify-center gap-0.5 cursor-pointer disabled:opacity-60 transition-all bg-[#F5F7FA] hover:bg-slate-200 text-[#102A43] border border-slate-200"
+                      >
+                        <span className="flex items-center gap-1.5">
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                          {submitting && paymentOption === 'Pay Later' ? 'Submitting...' : 'Submit Booking Request'}
+                        </span>
+                        <span className="text-[11px] text-slate-500">Confirm with Dispatch</span>
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={submitting || maintenanceMode || (!allowGuestBooking && !user)}
+                    onClick={() => void handleSubmitBooking('Pay Later')}
+                    className="w-full px-5 py-3.5 text-sm font-semibold rounded-lg flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60 transition-all bg-[#2563EB] hover:bg-[#1d4ed8] text-white shadow-sm"
+                  >
+                    <CheckCircle2 className="w-4 h-4" />
+                    {submitting ? 'Submitting Booking Request...' : 'Confirm & Submit Booking Request'}
+                  </button>
+                )}
               </div>
             </div>
 
@@ -1039,6 +1105,13 @@ export const BookingWizard: React.FC<BookingWizardProps> = ({
                 className="px-5 py-2.5 bg-[#F5F7FA] hover:bg-slate-200 text-[#102A43] text-sm font-semibold rounded-lg cursor-pointer"
               >
                 Open Customer Dashboard
+              </button>
+              <button
+                type="button"
+                onClick={handleResetWizard}
+                className="px-5 py-2.5 border border-slate-200 hover:bg-[#F5F7FA] text-slate-700 text-sm font-semibold rounded-lg cursor-pointer"
+              >
+                Book Another Vehicle
               </button>
             </div>
           </div>

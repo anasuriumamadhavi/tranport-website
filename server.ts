@@ -23,6 +23,7 @@ import {
   verifyToken,
 } from './server/auth';
 import { calculateFareEstimate } from './server/pricing';
+import { dispatchBookingStatusEmail, dispatchNewBookingEmails } from './server/email';
 import {
   Booking,
   BookingStatus,
@@ -53,6 +54,18 @@ const TEST_ORDER_HMAC_SECRET = crypto.randomBytes(32).toString('hex');
 
 if (!fs.existsSync(UPLOADS_DIR)) {
   fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+}
+
+async function runEmailSafely<T>(promise: Promise<T>, timeoutMs = 5000): Promise<T | null> {
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), timeoutMs)),
+    ]);
+  } catch (err) {
+    console.warn('[Email] Non-blocking dispatch error:', (err as Error).message);
+    return null;
+  }
 }
 
 function asString(val: unknown, maxLen = 400): string {
@@ -185,6 +198,7 @@ async function startServer() {
       ok: true,
       storage: db.isMongoConnected() ? 'mongodb' : 'local-persistent',
       razorpayConfigured: Boolean(process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET),
+      resendConfigured: Boolean(process.env.RESEND_API_KEY?.trim()),
     });
   });
 
@@ -1211,9 +1225,14 @@ async function startServer() {
     };
 
     await db.insertOne('bookings', booking);
+
+    if (paymentMode === 'Pay Later') {
+      await runEmailSafely(dispatchNewBookingEmails(booking.id));
+    }
+
     res.status(201).json({
       booking,
-      notification: `Booking request ${booking.bookingCode} created. Complete verification/payment to lock dispatch.`,
+      notification: `Booking request ${booking.bookingCode} created. Confirmation & invoice dispatched.`,
     });
   });
 
@@ -1477,6 +1496,8 @@ async function startServer() {
       paymentMode: paymentType,
       updatedAt: new Date().toISOString(),
     });
+
+    await runEmailSafely(dispatchNewBookingEmails(booking.id));
 
     res.json({
       verified: true,
@@ -1830,6 +1851,16 @@ async function startServer() {
     }
 
     const updated = await db.updateOneById('bookings', id, patch);
+    if (
+      updated &&
+      req.body.bookingStatus &&
+      updated.bookingStatus !== existing.bookingStatus &&
+      (['Confirmed', 'Driver Assigned', 'Rejected', 'Cancelled'] as BookingStatus[]).includes(
+        updated.bookingStatus
+      )
+    ) {
+      await runEmailSafely(dispatchBookingStatusEmail(updated.id, updated.bookingStatus));
+    }
     res.json({ booking: updated });
   });
 

@@ -152,6 +152,14 @@ export interface Booking {
   paymentMode?: 'Advance' | 'Full' | 'Pay Later';
   notes?: string;
   cancellationReason?: string;
+  emailNotifications?: {
+    invoiceGeneratedAt?: string;
+    customerConfirmationSentAt?: string;
+    adminNotificationSentAt?: string;
+    lastStatusNotified?: BookingStatus;
+    lastStatusNotifiedAt?: string;
+    lastError?: string;
+  };
   createdAt: string;
   updatedAt: string;
 }
