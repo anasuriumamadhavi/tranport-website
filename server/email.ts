@@ -364,3 +364,59 @@ export async function dispatchBookingStatusEmail(
     inFlightNotifications.delete(lockKey);
   }
 }
+
+export async function sendPasswordResetOtpEmail(params: {
+  to: string;
+  name: string;
+  code: string;
+  role: 'customer' | 'admin';
+}): Promise<{ sent: boolean; error?: string }> {
+  const resend = getResendClient();
+  if (!resend) {
+    return { sent: false, error: 'RESEND_API_KEY is not configured on the server.' };
+  }
+
+  try {
+    const settings = await db.getSettings();
+    const company = settings.companyName || 'Vizag Jagan Travels';
+    const supportPhone = settings.supportPhone || '+91 891 274 8800';
+    const fromEmail = resolveFromEmail(settings);
+    const title =
+      params.role === 'admin' ? 'Administrator Password Reset Code' : 'Password Reset Verification Code';
+
+    const html = `
+      <div style="font-family:Arial,Helvetica,sans-serif;max-width:560px;margin:0 auto;background:#ffffff;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;">
+        <div style="background:#102a43;color:#ffffff;padding:20px 24px;">
+          <h2 style="margin:0;font-size:19px;">${escapeHtml(company)}</h2>
+          <p style="margin:5px 0 0;font-size:13px;color:#cbd5e1;">${escapeHtml(title)}</p>
+        </div>
+        <div style="padding:24px;">
+          <p style="margin:0 0 12px;font-size:15px;color:#0f172a;">Hello <strong>${escapeHtml(params.name || 'Valued User')}</strong>,</p>
+          <p style="margin:0 0 16px;font-size:14px;line-height:1.6;color:#334155;">
+            Use the 6-character verification code below to reset your ${params.role === 'admin' ? 'administrator' : 'customer'} password. This code expires in <strong>15 minutes</strong>.
+          </p>
+          <div style="margin:18px 0;padding:16px;background:#f8fafc;border:1px dashed #94a3b8;border-radius:8px;text-align:center;">
+            <span style="font-family:monospace;font-size:26px;font-weight:700;letter-spacing:6px;color:#102a43;">${escapeHtml(params.code)}</span>
+          </div>
+          <p style="margin:14px 0 0;font-size:12px;color:#64748b;">
+            If you did not request a password reset, you can safely ignore this email or contact support at ${escapeHtml(supportPhone)}.
+          </p>
+        </div>
+      </div>
+    `;
+
+    const result = await resend.emails.send({
+      from: fromEmail,
+      to: [params.to],
+      subject: `${title} · ${company}`,
+      html,
+    });
+
+    if (result.error) {
+      return { sent: false, error: result.error.message };
+    }
+    return { sent: true };
+  } catch (err) {
+    return { sent: false, error: (err as Error).message };
+  }
+}

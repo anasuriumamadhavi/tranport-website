@@ -23,7 +23,11 @@ import {
   verifyToken,
 } from './server/auth';
 import { calculateFareEstimate } from './server/pricing';
-import { dispatchBookingStatusEmail, dispatchNewBookingEmails } from './server/email';
+import {
+  dispatchBookingStatusEmail,
+  dispatchNewBookingEmails,
+  sendPasswordResetOtpEmail,
+} from './server/email';
 import {
   Booking,
   BookingStatus,
@@ -666,9 +670,66 @@ async function startServer() {
     });
   });
 
+  app.post('/api/auth/admin/forgot-password/request-code', async (req: Request, res: Response) => {
+    const email = asString(req.body.email, 120).toLowerCase();
+    const rl = checkRateLimit(`admin-forgot-req:${req.ip}`, 5);
+    if (!rl.allowed) {
+      res.status(429).json({ error: `Too many requests. Try again in ${rl.retryAfterSeconds}s.` });
+      return;
+    }
+    if (process.env.ADMIN_PASSCODE?.trim()) {
+      res.status(400).json({
+        error: 'Admin access is controlled by ADMIN_PASSCODE in server environment variables.',
+      });
+      return;
+    }
+    if (!process.env.RESEND_API_KEY?.trim()) {
+      res.status(503).json({
+        error: 'Email OTP service is not configured yet. Please use your Admin Recovery Key instead.',
+      });
+      return;
+    }
+    if (!email || !email.includes('@')) {
+      res.status(400).json({ error: 'Please enter the administrator email address.' });
+      return;
+    }
+
+    const creds = await db.getAll('adminCredentials');
+    const matched = creds.find((c) => c.email === email);
+    if (matched) {
+      const code = generateShortResetCode();
+      const resetTokenHash = await hashPassword(code);
+      const resetTokenExpiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+      await db.updateOneById('adminCredentials', matched.id, {
+        resetTokenHash,
+        resetTokenExpiresAt,
+      });
+      const sent = await sendPasswordResetOtpEmail({
+        to: matched.email,
+        name: matched.name,
+        code,
+        role: 'admin',
+      });
+      if (!sent.sent) {
+        res.status(502).json({
+          error: sent.error || 'Could not deliver verification email. Use Admin Recovery Key instead.',
+        });
+        return;
+      }
+    }
+
+    res.json({
+      message: 'If that matches the registered administrator account, a 6-character reset code has been emailed.',
+    });
+  });
+
   app.post('/api/auth/admin/forgot-password', async (req: Request, res: Response) => {
     const email = asString(req.body.email, 120).toLowerCase();
+    const verificationType = (asString(req.body.verificationType, 20) || 'recovery_key') as
+      | 'recovery_key'
+      | 'email_otp';
     const recoveryProof = asString(req.body.recoveryKeyOrPasscode, 120);
+    const resetCode = asString(req.body.resetCode, 20).toUpperCase();
     const newPassword = asString(req.body.newPassword, 100);
     const rlKey = `admin-forgot:${req.ip}`;
     const rl = checkRateLimit(rlKey, 6);
@@ -686,34 +747,58 @@ async function startServer() {
       return;
     }
 
-    if (!email || !email.includes('@') || !recoveryProof || newPassword.length < 6) {
+    if (!email || !email.includes('@') || newPassword.length < 6) {
       res.status(400).json({
-        error: 'Admin email, recovery key, and new password (min 6 characters) are required.',
+        error: 'Admin email and new password (min 6 characters) are required.',
       });
       return;
     }
 
     const creds = await db.getAll('adminCredentials');
     const matched = creds.find((c) => c.email === email);
-    if (!matched || !matched.recoveryCodeHash) {
+    if (!matched) {
       res.status(401).json({
-        error: 'Invalid admin email or recovery key. Contact your deployment owner if no recovery key was saved.',
+        error: 'Invalid admin email or verification code.',
       });
       return;
     }
 
-    const proofValid =
-      (await verifyPassword(recoveryProof, matched.recoveryCodeHash)) ||
-      (await verifyPassword(recoveryProof.toUpperCase(), matched.recoveryCodeHash));
+    let proofValid = false;
+    if (verificationType === 'email_otp') {
+      if (
+        resetCode &&
+        matched.resetTokenHash &&
+        matched.resetTokenExpiresAt &&
+        new Date(matched.resetTokenExpiresAt).getTime() > Date.now()
+      ) {
+        proofValid = await verifyPassword(resetCode, matched.resetTokenHash);
+      }
+      if (!proofValid) {
+        res.status(401).json({ error: 'Invalid or expired email verification code.' });
+        return;
+      }
+    } else {
+      if (!recoveryProof || !matched.recoveryCodeHash) {
+        res.status(401).json({
+          error: 'Invalid admin email or recovery key. Contact your deployment owner if no recovery key was saved.',
+        });
+        return;
+      }
+      proofValid =
+        (await verifyPassword(recoveryProof, matched.recoveryCodeHash)) ||
+        (await verifyPassword(recoveryProof.toUpperCase(), matched.recoveryCodeHash));
 
-    if (!proofValid) {
-      res.status(401).json({ error: 'Invalid admin email or recovery key.' });
-      return;
+      if (!proofValid) {
+        res.status(401).json({ error: 'Invalid admin email or recovery key.' });
+        return;
+      }
     }
 
     const passwordHash = await hashPassword(newPassword);
     await db.updateOneById('adminCredentials', matched.id, {
       passwordHash,
+      resetTokenHash: undefined,
+      resetTokenExpiresAt: undefined,
       updatedAt: new Date().toISOString(),
     });
     clearRateLimit(rlKey);
@@ -920,9 +1005,63 @@ async function startServer() {
     res.json({ token, user: toPublicUser(user) });
   });
 
+  app.post('/api/auth/forgot-password/request-code', async (req: Request, res: Response) => {
+    const email = asString(req.body.email, 120).toLowerCase();
+    const rl = checkRateLimit(`forgot-req:${req.ip}:${email || 'none'}`, 5);
+    if (!rl.allowed) {
+      res.status(429).json({ error: `Too many requests. Try again in ${rl.retryAfterSeconds}s.` });
+      return;
+    }
+    if (!process.env.RESEND_API_KEY?.trim()) {
+      res.status(503).json({
+        error: 'Email OTP service is not configured yet. Please verify with Recovery PIN, Booking ID, or Desk Code.',
+      });
+      return;
+    }
+    if (!email || !email.includes('@')) {
+      res.status(400).json({ error: 'Please enter a valid registered email address.' });
+      return;
+    }
+
+    const users = await db.getAll('users');
+    const user = users.find((u) => u.email === email);
+    if (user) {
+      const code = generateShortResetCode();
+      const resetTokenHash = await hashPassword(code);
+      const resetTokenExpiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+      await db.updateOneById('users', user.id, {
+        resetTokenHash,
+        resetTokenExpiresAt,
+      });
+      const sent = await sendPasswordResetOtpEmail({
+        to: user.email,
+        name: user.name,
+        code,
+        role: 'customer',
+      });
+      if (!sent.sent) {
+        res.status(502).json({
+          error:
+            sent.error ||
+            'Could not send email verification code. Please try Recovery PIN, Booking ID, or Desk Code.',
+        });
+        return;
+      }
+    }
+
+    res.json({
+      message:
+        'If an account exists for that email address, a 6-character verification code has been sent (valid for 15 minutes).',
+    });
+  });
+
   app.post('/api/auth/forgot-password', async (req: Request, res: Response) => {
     const email = asString(req.body.email, 120).toLowerCase();
-    const verificationType = asString(req.body.verificationType, 20) as 'pin' | 'reset_code' | 'booking';
+    const verificationType = asString(req.body.verificationType, 20) as
+      | 'email_otp'
+      | 'pin'
+      | 'reset_code'
+      | 'booking';
     const newPassword = asString(req.body.newPassword, 100);
 
     const rlKey = `forgot:${req.ip}:${email || 'none'}`;
@@ -952,7 +1091,7 @@ async function startServer() {
       if (recoveryPin && user.recoveryPinHash) {
         verified = await verifyPassword(recoveryPin, user.recoveryPinHash);
       }
-    } else if (verificationType === 'reset_code') {
+    } else if (verificationType === 'reset_code' || verificationType === 'email_otp') {
       const resetCode = asString(req.body.resetCode, 20).toUpperCase();
       if (
         resetCode &&
@@ -983,8 +1122,10 @@ async function startServer() {
     if (!verified) {
       res.status(401).json({
         error:
-          verificationType === 'pin'
-            ? 'Email or Recovery PIN did not match. Try Booking Verification or request a Dispatch Reset Code.'
+          verificationType === 'email_otp'
+            ? 'Invalid or expired Email OTP code. Click Send Code to Email to request a fresh code.'
+            : verificationType === 'pin'
+            ? 'Email or Recovery PIN did not match. Try Email OTP, Booking ID, or Desk Code.'
             : verificationType === 'reset_code'
             ? 'Invalid or expired Dispatch Reset Code. Request a new code from our 24/7 desk.'
             : 'Email, registered mobile number, and Booking Reference ID did not match our records.',

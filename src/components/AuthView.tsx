@@ -26,7 +26,8 @@ type AuthMode =
   | 'admin'
   | 'admin-forgot';
 
-type CustomerVerifyType = 'pin' | 'booking' | 'reset_code';
+type CustomerVerifyType = 'email_otp' | 'pin' | 'booking' | 'reset_code';
+type AdminVerifyType = 'email_otp' | 'recovery_key';
 
 export const AuthView: React.FC<AuthViewProps> = ({
   onAuthenticated,
@@ -47,10 +48,12 @@ export const AuthView: React.FC<AuthViewProps> = ({
   const [showPassword, setShowPassword] = useState(false);
 
   // Forgot password states
-  const [verifyType, setVerifyType] = useState<CustomerVerifyType>('pin');
+  const [verifyType, setVerifyType] = useState<CustomerVerifyType>('email_otp');
+  const [adminVerifyType, setAdminVerifyType] = useState<AdminVerifyType>('email_otp');
   const [resetCode, setResetCode] = useState('');
   const [bookingCode, setBookingCode] = useState('');
   const [adminRecoveryProof, setAdminRecoveryProof] = useState('');
+  const [sendingOtp, setSendingOtp] = useState(false);
 
   // First-run admin setup one-time recovery key display
   const [pendingAdminSession, setPendingAdminSession] = useState<{
@@ -89,6 +92,8 @@ export const AuthView: React.FC<AuthViewProps> = ({
     setNotice(null);
     setPassword('');
     setConfirmPassword('');
+    setResetCode('');
+    setSendingOtp(false);
   };
 
   const handleCopyKey = async (value: string) => {
@@ -98,6 +103,31 @@ export const AuthView: React.FC<AuthViewProps> = ({
       setTimeout(() => setCopiedKey(false), 2000);
     } catch {
       // clipboard blocked fallback
+    }
+  };
+
+  const handleRequestEmailOtp = async (role: 'customer' | 'admin') => {
+    if (!email.trim() || !email.includes('@')) {
+      setError('Please enter your registered email address first.');
+      return;
+    }
+    setError(null);
+    setNotice(null);
+    setSendingOtp(true);
+    try {
+      const endpoint =
+        role === 'admin'
+          ? '/api/auth/admin/forgot-password/request-code'
+          : '/api/auth/forgot-password/request-code';
+      const res = await apiFetch<{ message: string }>(endpoint, {
+        method: 'POST',
+        body: JSON.stringify({ email: email.trim().toLowerCase() }),
+      });
+      setNotice(res.message);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSendingOtp(false);
     }
   };
 
@@ -141,7 +171,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
             email,
             verificationType: verifyType,
             recoveryPin: verifyType === 'pin' ? recoveryPin : undefined,
-            resetCode: verifyType === 'reset_code' ? resetCode : undefined,
+            resetCode: verifyType === 'reset_code' || verifyType === 'email_otp' ? resetCode : undefined,
             phone: verifyType === 'booking' ? phone : undefined,
             bookingCode: verifyType === 'booking' ? bookingCode : undefined,
             newPassword: password,
@@ -187,7 +217,9 @@ export const AuthView: React.FC<AuthViewProps> = ({
           method: 'POST',
           body: JSON.stringify({
             email,
-            recoveryKeyOrPasscode: adminRecoveryProof,
+            verificationType: adminVerifyType,
+            recoveryKeyOrPasscode: adminVerifyType === 'recovery_key' ? adminRecoveryProof : undefined,
+            resetCode: adminVerifyType === 'email_otp' ? resetCode : undefined,
             newPassword: password,
           }),
         });
@@ -325,9 +357,9 @@ export const AuthView: React.FC<AuthViewProps> = ({
                 : mode === 'admin' && envPasscodeConfigured
                 ? 'Administrator access is configured via server environment passcode.'
                 : mode === 'admin-forgot'
-                ? 'Verify your registered admin email and Admin Recovery Key to set a new password.'
+                ? 'Receive a verification code via email or use your Admin Recovery Key to set a new password.'
                 : mode === 'customer-forgot'
-                ? 'Choose a verification option below to verify ownership and set a new password.'
+                ? 'Request a 6-character code to your email or choose another verification method below.'
                 : 'Access live trip updates, payment receipts, and downloadable invoices.'}
             </p>
           </div>
@@ -414,8 +446,9 @@ export const AuthView: React.FC<AuthViewProps> = ({
                   <label className="block text-xs font-medium text-slate-600 mb-1.5">
                     Verification Method
                   </label>
-                  <div className="grid grid-cols-3 gap-1.5 bg-[#F5F7FA] p-1 rounded-lg">
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-1 bg-[#F5F7FA] p-1 rounded-lg">
                     {[
+                      { id: 'email_otp', label: 'Email OTP' },
                       { id: 'pin', label: 'Recovery PIN' },
                       { id: 'booking', label: 'Booking ID' },
                       { id: 'reset_code', label: 'Desk Code' },
@@ -423,7 +456,10 @@ export const AuthView: React.FC<AuthViewProps> = ({
                       <button
                         key={opt.id}
                         type="button"
-                        onClick={() => setVerifyType(opt.id as CustomerVerifyType)}
+                        onClick={() => {
+                          setVerifyType(opt.id as CustomerVerifyType);
+                          setError(null);
+                        }}
                         className={`py-1.5 px-2 text-[11px] font-semibold rounded-md cursor-pointer transition-colors ${
                           verifyType === opt.id
                             ? 'bg-white text-[#102A43] shadow-xs'
@@ -435,6 +471,32 @@ export const AuthView: React.FC<AuthViewProps> = ({
                     ))}
                   </div>
                 </div>
+
+                {verifyType === 'email_otp' && (
+                  <div className="space-y-2.5">
+                    <button
+                      type="button"
+                      disabled={sendingOtp}
+                      onClick={() => void handleRequestEmailOtp('customer')}
+                      className="w-full py-2 px-3 bg-[#2563EB] hover:bg-[#1d4ed8] text-white text-xs font-semibold rounded-lg cursor-pointer disabled:opacity-60 transition-colors"
+                    >
+                      {sendingOtp ? 'Sending Verification Code...' : 'Send 6-Char Code to Email'}
+                    </button>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-600 mb-1">
+                        Email Verification Code *
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={resetCode}
+                        onChange={(e) => setResetCode(e.target.value.toUpperCase())}
+                        placeholder="Enter 6-char code from your email"
+                        className="w-full px-3.5 py-2.5 text-sm font-mono uppercase border border-slate-200 rounded-lg text-[#102A43]"
+                      />
+                    </div>
+                  </div>
+                )}
 
                 {verifyType === 'pin' && (
                   <div>
@@ -505,18 +567,74 @@ export const AuthView: React.FC<AuthViewProps> = ({
             )}
 
             {mode === 'admin-forgot' && (
-              <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1">
-                  Admin Recovery Key *
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={adminRecoveryProof}
-                  onChange={(e) => setAdminRecoveryProof(e.target.value)}
-                  placeholder="VJT-XXXX-XXXX"
-                  className="w-full px-3.5 py-2.5 text-sm font-mono border border-slate-200 rounded-lg text-[#102A43]"
-                />
+              <div className="space-y-3 pt-1">
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1.5">
+                    Admin Verification Method
+                  </label>
+                  <div className="grid grid-cols-2 gap-1 bg-[#F5F7FA] p-1 rounded-lg">
+                    {[
+                      { id: 'email_otp', label: 'Email OTP' },
+                      { id: 'recovery_key', label: 'Recovery Key' },
+                    ].map((opt) => (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() => {
+                          setAdminVerifyType(opt.id as AdminVerifyType);
+                          setError(null);
+                        }}
+                        className={`py-1.5 px-2 text-[11px] font-semibold rounded-md cursor-pointer transition-colors ${
+                          adminVerifyType === opt.id
+                            ? 'bg-white text-[#102A43] shadow-xs'
+                            : 'text-slate-600 hover:text-[#102A43]'
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {adminVerifyType === 'email_otp' ? (
+                  <div className="space-y-2.5">
+                    <button
+                      type="button"
+                      disabled={sendingOtp}
+                      onClick={() => void handleRequestEmailOtp('admin')}
+                      className="w-full py-2 px-3 bg-[#2563EB] hover:bg-[#1d4ed8] text-white text-xs font-semibold rounded-lg cursor-pointer disabled:opacity-60 transition-colors"
+                    >
+                      {sendingOtp ? 'Sending Verification Code...' : 'Send 6-Char Code to Admin Email'}
+                    </button>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-600 mb-1">
+                        Email Verification Code *
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={resetCode}
+                        onChange={(e) => setResetCode(e.target.value.toUpperCase())}
+                        placeholder="Enter 6-char code from admin inbox"
+                        className="w-full px-3.5 py-2.5 text-sm font-mono uppercase border border-slate-200 rounded-lg text-[#102A43]"
+                      />
+                    </div>
+                  </div>
+                ) : (
+                  <div>
+                    <label className="block text-xs font-medium text-slate-600 mb-1">
+                      Admin Recovery Key *
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={adminRecoveryProof}
+                      onChange={(e) => setAdminRecoveryProof(e.target.value)}
+                      placeholder="VJT-XXXX-XXXX"
+                      className="w-full px-3.5 py-2.5 text-sm font-mono border border-slate-200 rounded-lg text-[#102A43]"
+                    />
+                  </div>
+                )}
               </div>
             )}
 

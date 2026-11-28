@@ -30,6 +30,8 @@ export interface AdminCredentialRecord {
   name: string;
   passwordHash: string;
   recoveryCodeHash?: string;
+  resetTokenHash?: string;
+  resetTokenExpiresAt?: string;
   adminEmailMigrated?: boolean;
   createdAt: string;
   updatedAt?: string;
