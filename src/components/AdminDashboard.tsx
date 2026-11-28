@@ -15,23 +15,28 @@ import {
   Edit3,
   KeyRound,
   LayoutDashboard,
+  Mail,
   MessageSquare,
   Package,
+  Phone,
   Plus,
   RefreshCw,
   RotateCcw,
+  Send,
   Settings,
   ShieldCheck,
   Trash2,
   Upload,
   UserCheck,
   Users,
+  X,
 } from 'lucide-react';
 import {
   Booking,
   BookingStatus,
   Driver,
   Enquiry,
+  EnquiryStatus,
   FeaturedDestination,
   GalleryCategory,
   GalleryItem,
@@ -146,6 +151,19 @@ const ALL_CATEGORIES: VehicleCategory[] = [
   'Luxury Buses',
   'Large Passenger Buses',
 ];
+
+function normalizeEnquiryStatus(raw: unknown): EnquiryStatus {
+  if (raw === 'Replied' || raw === 'Responded') return 'Replied';
+  if (raw === 'Closed' || raw === 'Resolved' || raw === 'Confirmed' || raw === 'Rejected') {
+    return 'Closed';
+  }
+  return 'New';
+}
+
+function sanitizeTelHref(phone: string): string | null {
+  const cleaned = phone.replace(/[^+\d]/g, '');
+  return cleaned.length >= 6 ? `tel:${cleaned}` : null;
+}
 
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   token,
@@ -278,6 +296,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     customerEmail: string;
   } | null>(null);
   const [copiedCustomerCode, setCopiedCustomerCode] = useState(false);
+
+  // Enquiry Reply Modal state
+  const [replyModalEnquiry, setReplyModalEnquiry] = useState<Enquiry | null>(null);
+  const [replySubject, setReplySubject] = useState('');
+  const [replyBody, setReplyBody] = useState('');
+  const [sendingReply, setSendingReply] = useState(false);
 
   const loadAllAdminData = async () => {
     setLoading(true);
@@ -663,12 +687,47 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     }
   };
 
-  const handleEnquiryStatus = async (id: string, status: Enquiry['status']) => {
+  const handleEnquiryStatus = async (id: string, status: EnquiryStatus) => {
     try {
       await apiFetch(`/api/admin/enquiries/${id}`, { method: 'PATCH', body: JSON.stringify({ status }) }, token);
       await loadAllAdminData();
     } catch (err) {
       setError((err as Error).message);
+    }
+  };
+
+  const openReplyModal = (enquiry: Enquiry) => {
+    setError(null);
+    setReplyModalEnquiry(enquiry);
+    setReplySubject(`Re: ${enquiry.subject}`);
+    setReplyBody('');
+  };
+
+  const handleSendEnquiryReply = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!replyModalEnquiry) return;
+    setSendingReply(true);
+    setError(null);
+    try {
+      const res = await apiFetch<{ sent: boolean; enquiry: Enquiry | null; message: string }>(
+        `/api/admin/enquiries/${encodeURIComponent(replyModalEnquiry.id)}/reply`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            subject: replySubject,
+            replyMessage: replyBody,
+          }),
+        },
+        token
+      );
+      setNotice(res.message || 'Reply sent to customer.');
+      setReplyModalEnquiry(null);
+      setReplyBody('');
+      await loadAllAdminData();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSendingReply(false);
     }
   };
 
@@ -1248,7 +1307,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     { label: "Today's Trips", value: kpis.todaysTrips },
                     { label: 'Upcoming Trips', value: kpis.upcomingTrips },
                     { label: 'Total Revenue', value: formatINR(kpis.totalRevenue) },
-                    { label: 'Pending Enquiries', value: kpis.pendingEnquiries },
+                    { label: 'New Enquiries', value: kpis.pendingEnquiries },
                   ].map((m) => (
                     <div key={m.label} className="bg-white border border-slate-200 rounded-xl p-4">
                       <p className="text-xs text-slate-500">{m.label}</p>
@@ -1939,29 +1998,93 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             {/* ENQUIRIES TAB */}
             {tab === 'enquiries' && (
               <div className="bg-white border border-slate-200 rounded-xl divide-y divide-slate-100">
-                {enquiries.map((e) => (
-                  <div key={e.id} className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                    <div className="space-y-1">
-                      <p className="text-xs font-medium text-[#2563EB]">
-                        {e.source} · {e.createdAt.slice(0, 10)}
-                      </p>
-                      <h3 className="text-sm font-bold text-[#102A43]">{e.subject}</h3>
-                      <p className="text-xs text-slate-600">{e.message}</p>
-                      <p className="text-xs text-slate-500">{e.name} · {e.phone} · {e.email}</p>
-                    </div>
-                    <select
-                      value={e.status}
-                      onChange={(ev) => handleEnquiryStatus(e.id, ev.target.value as Enquiry['status'])}
-                      className="px-3 py-1.5 text-xs font-semibold border border-slate-200 rounded-lg shrink-0"
-                    >
-                      <option value="Pending">Pending</option>
-                      <option value="Confirmed">Confirmed</option>
-                      <option value="Rejected">Rejected</option>
-                      <option value="Responded">Responded</option>
-                      <option value="Resolved">Resolved</option>
-                    </select>
+                {enquiries.length === 0 ? (
+                  <div className="p-8 text-center text-xs text-slate-500">
+                    No customer enquiries yet.
                   </div>
-                ))}
+                ) : (
+                  enquiries.map((e) => {
+                    const statusValue = normalizeEnquiryStatus(e.status);
+                    const hasValidEmail = Boolean(
+                      e.email?.includes('@') && e.email !== 'not-provided@vizagjagantravels.com'
+                    );
+                    const telHref = sanitizeTelHref(e.phone || '');
+                    return (
+                      <div
+                        key={e.id}
+                        className="p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-4"
+                      >
+                        <div className="space-y-1.5 flex-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="text-xs font-medium text-[#2563EB]">
+                              {e.source} · {e.createdAt.slice(0, 10)}
+                            </p>
+                            <span
+                              className={`px-2 py-0.5 rounded text-[11px] font-semibold ${
+                                statusValue === 'New'
+                                  ? 'bg-blue-50 text-blue-700 border border-blue-200'
+                                  : statusValue === 'Replied'
+                                  ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                  : 'bg-slate-100 text-slate-700 border border-slate-200'
+                              }`}
+                            >
+                              {statusValue}
+                            </span>
+                          </div>
+                          <h3 className="text-sm font-bold text-[#102A43]">{e.subject}</h3>
+                          <p className="text-xs text-slate-600 leading-relaxed">{e.message}</p>
+                          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500 pt-0.5">
+                            <span className="font-semibold text-[#102A43]">{e.name}</span>
+                            <span>{e.phone}</span>
+                            <span>{hasValidEmail ? e.email : 'Email not provided'}</span>
+                          </div>
+                          {e.repliedAt && (
+                            <p className="text-[11px] text-emerald-700">
+                              Replied on {e.repliedAt.slice(0, 10)}
+                              {e.lastReplySubject ? ` · ${e.lastReplySubject}` : ''}
+                            </p>
+                          )}
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2 shrink-0">
+                          {telHref && (
+                            <a
+                              href={telHref}
+                              className="px-3 py-1.5 text-xs font-semibold bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-lg inline-flex items-center gap-1.5"
+                            >
+                              <Phone className="w-3.5 h-3.5" />
+                              Call Customer
+                            </a>
+                          )}
+                          <button
+                            type="button"
+                            disabled={!hasValidEmail}
+                            onClick={() => openReplyModal(e)}
+                            title={
+                              hasValidEmail
+                                ? 'Open email reply form'
+                                : 'Customer did not provide an email address'
+                            }
+                            className="px-3 py-1.5 text-xs font-semibold bg-[#2563EB] hover:bg-[#1d4ed8] text-white rounded-lg inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed"
+                          >
+                            <Mail className="w-3.5 h-3.5" />
+                            Reply to Customer
+                          </button>
+                          <select
+                            value={statusValue}
+                            onChange={(ev) => handleEnquiryStatus(e.id, ev.target.value as EnquiryStatus)}
+                            aria-label={`Status for enquiry ${e.subject}`}
+                            className="px-3 py-1.5 text-xs font-semibold border border-slate-200 rounded-lg bg-white text-[#102A43]"
+                          >
+                            <option value="New">New</option>
+                            <option value="Replied">Replied</option>
+                            <option value="Closed">Closed</option>
+                          </select>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
               </div>
             )}
 
@@ -3951,6 +4074,106 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           </div>
         </div>
       </div>
+
+      {replyModalEnquiry && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-xl max-w-lg w-full p-6 shadow-xl space-y-4">
+            <div className="flex items-start justify-between gap-3 border-b border-slate-100 pb-3">
+              <div>
+                <h3 className="text-base font-bold text-[#102A43]">Reply to Customer Enquiry</h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  {replyModalEnquiry.name} · {replyModalEnquiry.phone}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setReplyModalEnquiry(null)}
+                aria-label="Close reply modal"
+                className="p-1 text-slate-400 hover:text-[#102A43] cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-3 bg-[#F5F7FA] border border-slate-200 rounded-lg text-xs text-slate-700 space-y-1">
+              <p className="font-semibold text-[#102A43]">
+                Original Enquiry ({replyModalEnquiry.subject}):
+              </p>
+              <p>{replyModalEnquiry.message}</p>
+            </div>
+
+            <form onSubmit={handleSendEnquiryReply} className="space-y-3">
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">
+                  Customer Email (To)
+                </label>
+                <input
+                  type="email"
+                  readOnly
+                  value={replyModalEnquiry.email}
+                  className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg text-slate-700"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">
+                  Email Subject
+                </label>
+                <input
+                  type="text"
+                  required
+                  maxLength={180}
+                  value={replySubject}
+                  onChange={(ev) => setReplySubject(ev.target.value)}
+                  className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg text-[#102A43]"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">
+                  Your Custom Reply
+                </label>
+                <textarea
+                  required
+                  rows={5}
+                  maxLength={4000}
+                  value={replyBody}
+                  onChange={(ev) => setReplyBody(ev.target.value)}
+                  placeholder="Write your personalized response, vehicle options, or quotation..."
+                  className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg text-[#102A43]"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2">
+                {sanitizeTelHref(replyModalEnquiry.phone || '') && (
+                  <a
+                    href={sanitizeTelHref(replyModalEnquiry.phone || '') || '#'}
+                    className="mr-auto px-3 py-2 text-xs font-semibold bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-lg inline-flex items-center gap-1.5"
+                  >
+                    <Phone className="w-3.5 h-3.5" />
+                    Call Customer
+                  </a>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setReplyModalEnquiry(null)}
+                  className="px-4 py-2 text-xs font-semibold border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={sendingReply}
+                  className="px-4 py-2 text-xs font-semibold bg-[#2563EB] hover:bg-[#1d4ed8] text-white rounded-lg inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-60"
+                >
+                  <Send className="w-3.5 h-3.5" />
+                  {sendingReply ? 'Sending...' : 'Send Reply Email'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </section>
   );
 };

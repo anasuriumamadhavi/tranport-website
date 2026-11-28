@@ -6,10 +6,11 @@ import {
   FileText,
   HelpCircle,
   Search,
+  Star,
   User,
   X,
 } from 'lucide-react';
-import { Booking, PaymentRecord, UserProfile, WebsiteSettings } from '../types';
+import { Booking, PaymentRecord, Review, UserProfile, WebsiteSettings } from '../types';
 import { apiFetch, formatINR } from '../lib/api';
 import { downloadBookingInvoicePdf } from '../lib/invoicePdf';
 
@@ -18,6 +19,7 @@ interface CustomerDashboardProps {
   token: string | null;
   settings?: WebsiteSettings | null;
   onUpdateUser: (user: UserProfile) => void;
+  onFeedbackSubmitted?: (review: Review) => void;
   onGoToLogin: () => void;
   onBookNewTrip: () => void;
 }
@@ -35,6 +37,7 @@ export const CustomerDashboard: React.FC<CustomerDashboardProps> = ({
   token,
   settings,
   onUpdateUser,
+  onFeedbackSubmitted,
   onGoToLogin,
   onBookNewTrip,
 }) => {
@@ -45,6 +48,12 @@ export const CustomerDashboard: React.FC<CustomerDashboardProps> = ({
   const [selectedBooking, setSelectedBooking] = useState<Booking | null>(null);
   const [cancelReason, setCancelReason] = useState('');
   const [cancelTargetId, setCancelTargetId] = useState<string | null>(null);
+  const [feedbackTarget, setFeedbackTarget] = useState<Booking | null>(null);
+  const [feedbackRating, setFeedbackRating] = useState<number>(5);
+  const [feedbackCity, setFeedbackCity] = useState('');
+  const [feedbackComment, setFeedbackComment] = useState('');
+  const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
+  const [feedbackError, setFeedbackError] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
   // Guest booking lookup
@@ -132,6 +141,48 @@ export const CustomerDashboard: React.FC<CustomerDashboardProps> = ({
       setStatusMessage(`Cancellation request submitted for ${booking.bookingCode}.`);
     } catch (err) {
       setStatusMessage((err as Error).message);
+    }
+  };
+
+  const handleFeedbackSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!feedbackTarget) return;
+    setFeedbackError(null);
+    if (feedbackComment.trim().length < 3) {
+      setFeedbackError('Please write a short comment about your trip.');
+      return;
+    }
+    setFeedbackSubmitting(true);
+    try {
+      const res = await apiFetch<{ review: Review; booking?: Booking; message: string }>(
+        `/api/bookings/${feedbackTarget.id}/feedback`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            rating: feedbackRating,
+            roleOrCity: feedbackCity.trim() || undefined,
+            comment: feedbackComment.trim(),
+            email: feedbackTarget.customerEmail,
+          }),
+        },
+        token
+      );
+      if (res.booking) {
+        setBookings((prev) => prev.map((b) => (b.id === feedbackTarget.id ? res.booking! : b)));
+        if (selectedBooking?.id === feedbackTarget.id) {
+          setSelectedBooking(res.booking);
+        }
+      }
+      onFeedbackSubmitted?.(res.review);
+      setStatusMessage(res.message);
+      setFeedbackTarget(null);
+      setFeedbackComment('');
+      setFeedbackCity('');
+      setFeedbackRating(5);
+    } catch (err) {
+      setFeedbackError((err as Error).message);
+    } finally {
+      setFeedbackSubmitting(false);
     }
   };
 
@@ -386,15 +437,13 @@ export const CustomerDashboard: React.FC<CustomerDashboardProps> = ({
                 <Download className="w-3.5 h-3.5" />
                 Invoice
               </button>
-              {!['Completed', 'Cancelled', 'Rejected', 'Cancellation Requested'].includes(b.bookingStatus) && (
-                <button
-                  type="button"
-                  onClick={() => setCancelTargetId(b.id)}
-                  className="px-3 py-2 text-xs font-semibold text-red-700 bg-red-50 hover:bg-red-100 rounded-lg cursor-pointer"
-                >
-                  Request Cancel
-                </button>
-              )}
+              {bookingStatusButton(b, setCancelTargetId, (target) => {
+                setFeedbackError(null);
+                setFeedbackRating(5);
+                setFeedbackComment('');
+                setFeedbackCity('');
+                setFeedbackTarget(target);
+              })}
             </div>
           </div>
         ))}
@@ -772,6 +821,147 @@ export const CustomerDashboard: React.FC<CustomerDashboardProps> = ({
           </div>
         </div>
       )}
+
+      {/* Completed Service Feedback Modal */}
+      {feedbackTarget && (
+        <div className="fixed inset-0 z-50 bg-[#102A43]/60 flex items-center justify-center p-4">
+          <form
+            onSubmit={handleFeedbackSubmit}
+            className="bg-white rounded-xl border border-slate-200 max-w-md w-full p-6 space-y-4"
+          >
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <p className="text-xs font-mono text-[#2563EB]">{feedbackTarget.bookingCode}</p>
+                <h3 className="text-lg font-bold text-[#102A43]">Rate Your Completed Trip</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setFeedbackTarget(null)}
+                className="p-1.5 text-slate-500 hover:bg-[#F5F7FA] rounded-lg cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-600">
+              {feedbackTarget.vehicleName} · {feedbackTarget.pickupLocation} → {feedbackTarget.dropLocation}
+            </p>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1.5">Star Rating</label>
+              <div className="flex items-center gap-1.5">
+                {[1, 2, 3, 4, 5].map((star) => (
+                  <button
+                    key={star}
+                    type="button"
+                    onClick={() => setFeedbackRating(star)}
+                    className={`p-1.5 rounded-lg border cursor-pointer ${
+                      feedbackRating >= star
+                        ? 'bg-amber-50 border-amber-300 text-[#F59E0B]'
+                        : 'bg-white border-slate-200 text-slate-300'
+                    }`}
+                  >
+                    <Star className="w-4 h-4 fill-current" />
+                  </button>
+                ))}
+                <span className="ml-2 text-xs font-semibold text-[#102A43]">{feedbackRating} / 5</span>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">
+                City / Role (Optional)
+              </label>
+              <input
+                type="text"
+                maxLength={80}
+                value={feedbackCity}
+                onChange={(e) => setFeedbackCity(e.target.value)}
+                placeholder="e.g. Family Traveller · Visakhapatnam"
+                className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg text-[#102A43]"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">
+                Your Feedback *
+              </label>
+              <textarea
+                rows={3}
+                required
+                minLength={3}
+                maxLength={600}
+                value={feedbackComment}
+                onChange={(e) => setFeedbackComment(e.target.value)}
+                placeholder="Share your experience — published directly on our website..."
+                className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg text-[#102A43]"
+              />
+            </div>
+
+            {feedbackError && (
+              <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+                {feedbackError}
+              </p>
+            )}
+
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setFeedbackTarget(null)}
+                className="px-4 py-2 text-xs font-semibold bg-[#F5F7FA] text-[#102A43] rounded-lg cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={feedbackSubmitting}
+                className="px-4 py-2 text-xs font-semibold bg-[#2563EB] hover:bg-[#1d4ed8] text-white rounded-lg cursor-pointer disabled:opacity-60"
+              >
+                {feedbackSubmitting ? 'Publishing...' : 'Publish Feedback'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
     </section>
   );
 };
+
+function bookingStatusButton(
+  b: Booking,
+  onRequestCancel: (id: string) => void,
+  onOpenFeedback: (b: Booking) => void
+) {
+  if (b.bookingStatus === 'Completed') {
+    if (b.feedbackSubmittedAt) {
+      return (
+        <span className="px-3 py-2 text-xs font-semibold text-emerald-700 bg-emerald-50 rounded-lg inline-flex items-center gap-1">
+          <Star className="w-3.5 h-3.5 fill-current" />
+          Reviewed ({b.feedbackRating || 5}★)
+        </span>
+      );
+    }
+    return (
+      <button
+        type="button"
+        onClick={() => onOpenFeedback(b)}
+        className="px-3 py-2 text-xs font-semibold text-white bg-[#2563EB] hover:bg-[#1d4ed8] rounded-lg inline-flex items-center gap-1.5 cursor-pointer"
+      >
+        <Star className="w-3.5 h-3.5" />
+        Leave Feedback
+      </button>
+    );
+  }
+  if (!['Cancelled', 'Rejected', 'Cancellation Requested'].includes(b.bookingStatus)) {
+    return (
+      <button
+        type="button"
+        onClick={() => onRequestCancel(b.id)}
+        className="px-3 py-2 text-xs font-semibold text-red-700 bg-red-50 hover:bg-red-100 rounded-lg cursor-pointer"
+      >
+        Request Cancel
+      </button>
+    );
+  }
+  return null;
+}

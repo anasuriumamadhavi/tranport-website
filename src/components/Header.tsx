@@ -14,6 +14,8 @@ export type ActivePage =
   | 'customer'
   | 'admin'
   | 'admin-action'
+  | 'enquiry-reply'
+  | 'feedback'
   | 'login';
 
 interface HeaderProps {

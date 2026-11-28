@@ -24,11 +24,12 @@ import {
 } from './server/auth';
 import { calculateFareEstimate } from './server/pricing';
 import {
+  dispatchBookingCompletedFeedbackEmail,
   dispatchBookingStatusEmail,
-  dispatchEnquiryStatusEmail,
   dispatchNewBookingEmails,
   dispatchNewEnquiryAdminEmail,
   hashAdminActionToken,
+  sendEnquiryReplyEmail,
   sendPasswordResetOtpEmail,
 } from './server/email';
 import {
@@ -36,6 +37,7 @@ import {
   BookingStatus,
   Driver,
   Enquiry,
+  EnquiryStatus,
   FeaturedDestination,
   FleetGroup,
   GalleryCategory,
@@ -76,6 +78,12 @@ async function runEmailSafely<T>(promise: Promise<T>, timeoutMs = 5000): Promise
 }
 
 const inFlightActionDecisions = new Set<string>();
+const inFlightFeedbackSubmissions = new Set<string>();
+
+function sanitizeBookingForClient(booking: Booking): Booking {
+  const { feedbackTokenHash: _h, feedbackTokenExpiresAt: _e, ...safe } = booking;
+  return safe;
+}
 
 function resolveRequestBaseUrl(req: Request): string {
   const rawProto = asString(req.headers['x-forwarded-proto'], 16).split(',')[0].trim().toLowerCase();
@@ -113,6 +121,19 @@ function asNumber(val: unknown, fallback = 0): number {
 function normalizePhoneDigits(phone: string): string {
   const digits = phone.replace(/[^\d]/g, '');
   return digits.length > 10 ? digits.slice(-10) : digits;
+}
+
+function normalizeEnquiryStatus(raw: unknown): EnquiryStatus {
+  if (raw === 'Replied' || raw === 'Responded') return 'Replied';
+  if (raw === 'Closed' || raw === 'Resolved' || raw === 'Confirmed' || raw === 'Rejected') {
+    return 'Closed';
+  }
+  return 'New';
+}
+
+function withNormalizedEnquiryStatus(enquiry: Enquiry): Enquiry {
+  const status = normalizeEnquiryStatus(enquiry.status);
+  return status === enquiry.status ? enquiry : { ...enquiry, status };
 }
 
 function toPublicUser(user: StoredUser) {
@@ -512,6 +533,140 @@ async function startServer() {
     res.status(201).json({ review });
   });
 
+  // Verified Completed-Trip Feedback via Email Link
+  app.get('/api/feedback/check', async (req: Request, res: Response) => {
+    const rawToken = asString(req.query.token, 160);
+    if (!/^[a-f0-9]{32,128}$/i.test(rawToken)) {
+      res.status(400).json({ status: 'invalid', message: 'Invalid feedback link.' });
+      return;
+    }
+    const tokenHash = hashAdminActionToken(rawToken);
+    const bookings = await db.getAll('bookings');
+    const booking = bookings.find((b) => b.feedbackTokenHash === tokenHash);
+    if (!booking) {
+      res.status(404).json({ status: 'invalid', message: 'Feedback link was not found or has already been used.' });
+      return;
+    }
+    if (booking.feedbackSubmittedAt) {
+      res.json({
+        status: 'submitted',
+        bookingCode: booking.bookingCode,
+        message: 'Thank you! Feedback has already been submitted for this trip.',
+      });
+      return;
+    }
+    if (booking.feedbackTokenExpiresAt && Date.now() > Date.parse(booking.feedbackTokenExpiresAt)) {
+      res.json({
+        status: 'expired',
+        bookingCode: booking.bookingCode,
+        message: 'This feedback link has expired. You can still submit feedback from your Customer Dashboard.',
+      });
+      return;
+    }
+    if (booking.bookingStatus !== 'Completed') {
+      res.json({
+        status: 'not_completed',
+        bookingCode: booking.bookingCode,
+        message: 'Feedback opens once your trip status is marked Completed.',
+      });
+      return;
+    }
+
+    const firstName = booking.customerName.split(' ')[0] || 'Passenger';
+    res.json({
+      status: 'ready',
+      bookingCode: booking.bookingCode,
+      customerFirstName: firstName,
+      vehicleName: booking.vehicleName,
+      vehicleCategory: booking.vehicleCategory,
+      tripType: booking.tripType,
+      journeyDate: booking.journeyDate,
+      routeSummary: `${booking.pickupLocation} → ${booking.dropLocation}`,
+    });
+  });
+
+  app.post('/api/feedback/submit', async (req: Request, res: Response) => {
+    const rl = checkRateLimit(`feedback-token:${req.ip}`, 15);
+    if (!rl.allowed) {
+      res.status(429).json({ error: `Too many submissions. Try again in ${rl.retryAfterSeconds}s.` });
+      return;
+    }
+
+    const rawToken = asString(req.body.token, 160);
+    const rating = Math.round(Math.min(5, Math.max(1, asNumber(req.body.rating, 5))));
+    const comment = asString(req.body.comment, 600);
+    const roleOrCity = asString(req.body.roleOrCity, 80);
+    const customName = asString(req.body.customerName, 80);
+
+    if (!/^[a-f0-9]{32,128}$/i.test(rawToken)) {
+      res.status(400).json({ error: 'Invalid feedback token.' });
+      return;
+    }
+    if (!comment || comment.length < 3) {
+      res.status(400).json({ error: 'Please enter a short review comment (min 3 characters).' });
+      return;
+    }
+
+    const tokenHash = hashAdminActionToken(rawToken);
+    const bookings = await db.getAll('bookings');
+    const booking = bookings.find((b) => b.feedbackTokenHash === tokenHash);
+    if (!booking) {
+      res.status(404).json({ error: 'Feedback link is invalid or already used.' });
+      return;
+    }
+    if (inFlightFeedbackSubmissions.has(booking.id)) {
+      res.status(409).json({ error: 'Feedback submission already in progress.' });
+      return;
+    }
+    inFlightFeedbackSubmissions.add(booking.id);
+
+    try {
+      if (booking.feedbackSubmittedAt) {
+        res.status(409).json({ error: 'Feedback has already been submitted for this trip.' });
+        return;
+      }
+      if (booking.feedbackTokenExpiresAt && Date.now() > Date.parse(booking.feedbackTokenExpiresAt)) {
+        res.status(410).json({ error: 'This feedback link has expired.' });
+        return;
+      }
+      if (booking.bookingStatus !== 'Completed') {
+        res.status(400).json({ error: 'Feedback can only be submitted after trip completion.' });
+        return;
+      }
+
+      const nowIso = new Date().toISOString();
+      const review: Review = {
+        id: `rev-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        bookingId: booking.id,
+        bookingCode: booking.bookingCode,
+        customerName: customName || booking.customerName,
+        roleOrCity: roleOrCity || 'Verified Passenger · Visakhapatnam',
+        companyOrTrip: `${booking.vehicleName} · ${booking.tripType}`,
+        vehicleCategory: booking.vehicleCategory,
+        rating,
+        comment,
+        verified: true,
+        createdAt: nowIso,
+      };
+      await db.insertOne('reviews', review);
+      await db.updateOneById('bookings', booking.id, {
+        feedbackSubmittedAt: nowIso,
+        feedbackRating: rating,
+        feedbackTokenHash: undefined,
+        feedbackTokenExpiresAt: undefined,
+        updatedAt: nowIso,
+      });
+
+      res.status(201).json({
+        review,
+        bookingCode: booking.bookingCode,
+        message: 'Thank you! Your verified review is now live on our website.',
+      });
+    } finally {
+      inFlightFeedbackSubmissions.delete(booking.id);
+    }
+  });
+
   app.post('/api/enquiries', async (req: Request, res: Response) => {
     const name = asString(req.body.name, 80);
     const email = asString(req.body.email, 120);
@@ -535,7 +690,7 @@ async function startServer() {
       message,
       source,
       bookingCode,
-      status: 'Pending',
+      status: 'New',
       createdAt: new Date().toISOString(),
     };
     await db.insertOne('enquiries', enquiry);
@@ -1411,7 +1566,8 @@ async function startServer() {
     const userEmail = req.user!.email.toLowerCase();
     const mine = bookings
       .filter((b) => b.customerId === req.user!.userId || b.customerEmail.toLowerCase() === userEmail)
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .map(sanitizeBookingForClient);
     res.json({ bookings: mine });
   });
 
@@ -1433,7 +1589,94 @@ async function startServer() {
       res.status(404).json({ error: 'No matching booking found for that Booking ID and contact.' });
       return;
     }
-    res.json({ booking });
+    res.json({ booking: sanitizeBookingForClient(booking) });
+  });
+
+  app.post('/api/bookings/:id/feedback', async (req: Request, res: Response) => {
+    const rl = checkRateLimit(`feedback-dash:${req.ip}`, 15);
+    if (!rl.allowed) {
+      res.status(429).json({ error: `Too many submissions. Try again in ${rl.retryAfterSeconds}s.` });
+      return;
+    }
+
+    const id = asString(req.params.id, 80);
+    const token = extractBearerToken(req);
+    const authUser = token ? verifyToken(token) : null;
+    const verifyEmail = asString(req.body.email, 120).toLowerCase();
+    const rating = Math.round(Math.min(5, Math.max(1, asNumber(req.body.rating, 5))));
+    const comment = asString(req.body.comment, 600);
+    const roleOrCity = asString(req.body.roleOrCity, 80);
+
+    if (!comment || comment.length < 3) {
+      res.status(400).json({ error: 'Please write a short review comment (min 3 characters).' });
+      return;
+    }
+
+    const bookings = await db.getAll('bookings');
+    const booking = bookings.find((b) => b.id === id);
+    if (!booking) {
+      res.status(404).json({ error: 'Booking not found.' });
+      return;
+    }
+
+    const ownsViaJwt =
+      authUser &&
+      (authUser.role === 'admin' ||
+        booking.customerId === authUser.userId ||
+        booking.customerEmail.toLowerCase() === authUser.email.toLowerCase());
+    const ownsViaEmail = verifyEmail && booking.customerEmail.toLowerCase() === verifyEmail;
+
+    if (!ownsViaJwt && !ownsViaEmail) {
+      res.status(403).json({ error: 'Not authorized to submit feedback for this booking.' });
+      return;
+    }
+    if (booking.bookingStatus !== 'Completed') {
+      res.status(400).json({ error: 'Feedback is enabled once your service is marked Completed.' });
+      return;
+    }
+    if (inFlightFeedbackSubmissions.has(booking.id)) {
+      res.status(409).json({ error: 'Feedback submission already in progress.' });
+      return;
+    }
+    inFlightFeedbackSubmissions.add(booking.id);
+
+    try {
+      if (booking.feedbackSubmittedAt) {
+        res.status(409).json({ error: 'You have already submitted feedback for this completed trip.' });
+        return;
+      }
+
+      const nowIso = new Date().toISOString();
+      const review: Review = {
+        id: `rev-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        bookingId: booking.id,
+        bookingCode: booking.bookingCode,
+        customerName: booking.customerName,
+        roleOrCity: roleOrCity || 'Verified Passenger · Visakhapatnam',
+        companyOrTrip: `${booking.vehicleName} · ${booking.tripType}`,
+        vehicleCategory: booking.vehicleCategory,
+        rating,
+        comment,
+        verified: true,
+        createdAt: nowIso,
+      };
+      await db.insertOne('reviews', review);
+      const updatedBooking = await db.updateOneById('bookings', booking.id, {
+        feedbackSubmittedAt: nowIso,
+        feedbackRating: rating,
+        feedbackTokenHash: undefined,
+        feedbackTokenExpiresAt: undefined,
+        updatedAt: nowIso,
+      });
+
+      res.status(201).json({
+        review,
+        booking: updatedBooking ? sanitizeBookingForClient(updatedBooking) : undefined,
+        message: 'Thank you! Your feedback has been published live to the website.',
+      });
+    } finally {
+      inFlightFeedbackSubmissions.delete(booking.id);
+    }
   });
 
   app.post('/api/bookings/:id/cancel-request', async (req: Request, res: Response) => {
@@ -1718,7 +1961,7 @@ async function startServer() {
       .filter((p) => p.status === 'Captured')
       .reduce((acc, p) => acc + p.amount - (p.refundAmount || 0), 0);
 
-    const pendingEnquiries = enquiries.filter((e) => e.status === 'Pending').length;
+    const pendingEnquiries = enquiries.filter((e) => normalizeEnquiryStatus(e.status) === 'New').length;
 
     res.json({
       kpis: {
@@ -2043,6 +2286,10 @@ async function startServer() {
           dispatchBookingStatusEmail(updated.id, updated.bookingStatus, {
             notifyAdminWithInvoice: updated.bookingStatus === 'Confirmed',
           })
+        );
+      } else if (updated.bookingStatus === 'Completed') {
+        await runEmailSafely(
+          dispatchBookingCompletedFeedbackEmail(updated.id, resolveRequestBaseUrl(req))
         );
       }
     }
@@ -2649,18 +2896,22 @@ async function startServer() {
     res.json({ payment: updatedPayment });
   });
 
-  // Enquiries Management
+  // Enquiries Management (Separate workflow: New / Replied / Closed, no PDF/Confirm/Reject)
   app.get('/api/admin/enquiries', requireAdmin, async (_req: Request, res: Response) => {
     const enquiries = await db.getAll('enquiries');
-    res.json({ enquiries: enquiries.sort((a, b) => b.createdAt.localeCompare(a.createdAt)) });
+    res.json({
+      enquiries: enquiries
+        .map(withNormalizedEnquiryStatus)
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+    });
   });
 
   app.patch('/api/admin/enquiries/:id', requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
     const id = asString(req.params.id, 60);
-    const status = asString(req.body.status, 30) as Enquiry['status'];
-    const allowedStatuses: Enquiry['status'][] = ['Pending', 'Confirmed', 'Rejected', 'Responded', 'Resolved'];
+    const status = asString(req.body.status, 30) as EnquiryStatus;
+    const allowedStatuses: EnquiryStatus[] = ['New', 'Replied', 'Closed'];
     if (!allowedStatuses.includes(status)) {
-      res.status(400).json({ error: 'Invalid enquiry status' });
+      res.status(400).json({ error: 'Invalid enquiry status. Allowed values: New, Replied, Closed.' });
       return;
     }
 
@@ -2675,22 +2926,163 @@ async function startServer() {
       status,
       updatedAt: new Date().toISOString(),
     });
-    if (updated && status !== existing.status) {
-      if (status !== 'Pending') {
-        await db.consumeAdminActionTokensForTarget('enquiry', updated.id, {
-          usedByEmail: req.user?.email,
-          usedByRole: req.user?.role,
-          decisionResult: `dashboard:${status}`,
-        });
-      }
-      if (status === 'Confirmed' || status === 'Rejected' || status === 'Responded' || status === 'Resolved') {
-        await runEmailSafely(dispatchEnquiryStatusEmail(updated.id, status));
-      }
+    if (updated && status === 'Closed') {
+      await db.consumeAdminActionTokensForTarget('enquiry', updated.id, {
+        usedByEmail: req.user?.email,
+        usedByRole: req.user?.role,
+        decisionResult: 'dashboard:Closed',
+      });
     }
-    res.json({ enquiry: updated });
+    res.json({ enquiry: updated ? withNormalizedEnquiryStatus(updated) : null });
   });
 
-  // Single-use expiring Email Action Links (Admin-verified approval/rejection)
+  app.get('/api/admin/enquiry-reply/check', async (req: Request, res: Response) => {
+    const rawToken = asString(req.query.token, 160);
+    if (!/^[a-f0-9]{32,128}$/i.test(rawToken)) {
+      res.status(400).json({ status: 'invalid', message: 'Invalid enquiry reply link token.' });
+      return;
+    }
+    const tokenHash = hashAdminActionToken(rawToken);
+    const tokens = await db.getAll('adminActionTokens');
+    const record = tokens.find(
+      (t) => t.tokenHash === tokenHash && t.targetType === 'enquiry' && t.action === 'reply'
+    );
+    if (!record) {
+      res.status(404).json({ status: 'invalid', message: 'Enquiry reply link not found.' });
+      return;
+    }
+    if (record.usedAt) {
+      res.json({
+        status: 'used',
+        expiresAt: record.expiresAt,
+        message: 'A reply has already been sent via this link. Sign in as administrator to view or follow up.',
+      });
+      return;
+    }
+    if (Date.now() > Date.parse(record.expiresAt)) {
+      res.json({
+        status: 'expired',
+        expiresAt: record.expiresAt,
+        message: 'This enquiry reply link has expired (48-hour limit). Sign in to reply from the Admin Dashboard.',
+      });
+      return;
+    }
+    res.json({
+      status: 'ready',
+      expiresAt: record.expiresAt,
+      message: 'Administrator sign-in required to view customer details and send an email reply.',
+    });
+  });
+
+  app.get('/api/admin/enquiry-reply/preview', requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+    const rawToken = asString(req.query.token, 160);
+    if (!/^[a-f0-9]{32,128}$/i.test(rawToken)) {
+      res.status(400).json({ error: 'Invalid enquiry reply token format.' });
+      return;
+    }
+    const tokenHash = hashAdminActionToken(rawToken);
+    const tokens = await db.getAll('adminActionTokens');
+    const record = tokens.find(
+      (t) => t.tokenHash === tokenHash && t.targetType === 'enquiry' && t.action === 'reply'
+    );
+    if (!record) {
+      res.status(404).json({ error: 'Enquiry reply link was not found.' });
+      return;
+    }
+
+    const enquiries = await db.getAll('enquiries');
+    const enquiry = enquiries.find((e) => e.id === record.targetId);
+    if (!enquiry) {
+      res.status(404).json({ error: 'Associated enquiry no longer exists.' });
+      return;
+    }
+
+    res.json({
+      targetType: 'enquiry',
+      expiresAt: record.expiresAt,
+      isExpired: Date.now() > Date.parse(record.expiresAt),
+      isUsed: Boolean(record.usedAt),
+      usedByEmail: record.usedByEmail,
+      enquiry: withNormalizedEnquiryStatus(enquiry),
+    });
+  });
+
+  app.post('/api/admin/enquiries/:id/reply', requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+    const rl = checkRateLimit(`admin-enquiry-reply:${req.ip}`, 30);
+    if (!rl.allowed) {
+      res.status(429).json({ error: `Too many requests. Try again in ${rl.retryAfterSeconds}s.` });
+      return;
+    }
+
+    const id = asString(req.params.id, 60);
+    const subject = asString(req.body.subject, 180);
+    const replyMessage = asString(req.body.replyMessage, 4000);
+    const actionToken = asString(req.body.actionToken, 160);
+
+    if (!replyMessage || replyMessage.length < 2) {
+      res.status(400).json({ error: 'Please enter a reply message (min 2 characters).' });
+      return;
+    }
+
+    if (actionToken) {
+      if (!/^[a-f0-9]{32,128}$/i.test(actionToken)) {
+        res.status(400).json({ error: 'Invalid enquiry reply token format.' });
+        return;
+      }
+      const tokenHash = hashAdminActionToken(actionToken);
+      const tokens = await db.getAll('adminActionTokens');
+      const record = tokens.find(
+        (t) =>
+          t.tokenHash === tokenHash &&
+          t.targetType === 'enquiry' &&
+          t.targetId === id &&
+          t.action === 'reply'
+      );
+      if (!record) {
+        res.status(404).json({ error: 'Enquiry reply link was not found.' });
+        return;
+      }
+      if (record.usedAt) {
+        res.status(409).json({ error: 'This enquiry reply link has already been used. Use the Admin Dashboard for follow-ups.' });
+        return;
+      }
+      if (Date.now() > Date.parse(record.expiresAt)) {
+        res.status(410).json({ error: 'This enquiry reply link has expired. Use the Admin Dashboard to reply.' });
+        return;
+      }
+    }
+
+    const result = await sendEnquiryReplyEmail({
+      enquiryId: id,
+      subject,
+      replyMessage,
+      adminEmail: req.user?.email,
+    });
+
+    if (!result.sent) {
+      const statusCode = result.error?.includes('not found')
+        ? 404
+        : result.error?.includes('valid email')
+        ? 400
+        : 502;
+      res.status(statusCode).json({ error: result.error || 'Failed to send reply email.' });
+      return;
+    }
+
+    await db.consumeAdminActionTokensForTarget('enquiry', id, {
+      usedByEmail: req.user?.email,
+      usedByRole: req.user?.role,
+      decisionResult: 'reply-sent',
+    });
+
+    res.json({
+      sent: true,
+      enquiry: result.enquiry ? withNormalizedEnquiryStatus(result.enquiry) : null,
+      message: `Reply email sent to ${result.enquiry?.email || 'customer'} and enquiry marked Replied.`,
+    });
+  });
+
+  // Single-use expiring Booking Email Action Links (Admin-verified approval/rejection — Booking workflow only)
   app.get('/api/admin/action-links/check', async (req: Request, res: Response) => {
     const rawToken = asString(req.query.token, 160);
     if (!/^[a-f0-9]{32,128}$/i.test(rawToken)) {
@@ -2699,35 +3091,35 @@ async function startServer() {
     }
     const tokenHash = hashAdminActionToken(rawToken);
     const tokens = await db.getAll('adminActionTokens');
-    const record = tokens.find((t) => t.tokenHash === tokenHash);
+    const record = tokens.find((t) => t.tokenHash === tokenHash && t.targetType === 'booking');
     if (!record) {
-      res.status(404).json({ status: 'invalid', message: 'Action link not found.' });
+      res.status(404).json({ status: 'invalid', message: 'Booking action link not found.' });
       return;
     }
     if (record.usedAt) {
       res.json({
         status: 'used',
-        targetType: record.targetType,
+        targetType: 'booking',
         action: record.action,
-        message: 'This decision link has already been used.',
+        message: 'This booking decision link has already been used.',
       });
       return;
     }
     if (Date.now() > Date.parse(record.expiresAt)) {
       res.json({
         status: 'expired',
-        targetType: record.targetType,
+        targetType: 'booking',
         action: record.action,
-        message: 'This action link has expired (48-hour limit).',
+        message: 'This booking action link has expired (48-hour limit).',
       });
       return;
     }
     res.json({
       status: 'ready',
-      targetType: record.targetType,
+      targetType: 'booking',
       action: record.action,
       expiresAt: record.expiresAt,
-      message: 'Administrator sign-in required to review and execute this action.',
+      message: 'Administrator sign-in required to review and execute this booking decision.',
     });
   });
 
@@ -2739,62 +3131,39 @@ async function startServer() {
     }
     const tokenHash = hashAdminActionToken(rawToken);
     const tokens = await db.getAll('adminActionTokens');
-    const record = tokens.find((t) => t.tokenHash === tokenHash);
+    const record = tokens.find((t) => t.tokenHash === tokenHash && t.targetType === 'booking');
     if (!record) {
-      res.status(404).json({ error: 'Action link was not found.' });
+      res.status(404).json({ error: 'Booking action link was not found.' });
       return;
     }
 
     const isExpired = Date.now() > Date.parse(record.expiresAt);
     const isUsed = Boolean(record.usedAt);
 
-    if (record.targetType === 'booking') {
-      const bookings = await db.getAll('bookings');
-      const booking = bookings.find((b) => b.id === record.targetId);
-      if (!booking) {
-        res.status(404).json({ error: 'Associated booking no longer exists.' });
-        return;
-      }
-      const alreadyProcessed = isUsed || booking.bookingStatus !== 'Pending';
-      let conflictError: string | null = null;
-      if (!alreadyProcessed && record.action === 'confirm') {
-        const conflict = hasVehicleBookingConflict(
-          bookings,
-          booking.vehicleId,
-          booking.journeyDate,
-          booking.returnDate,
-          booking.journeyTime,
-          booking.tripType,
-          booking.id
-        );
-        if (conflict) {
-          conflictError = `Vehicle already reserved by overlapping booking ${conflict.bookingCode}.`;
-        }
-      }
-      res.json({
-        targetType: 'booking',
-        action: record.action,
-        expiresAt: record.expiresAt,
-        isExpired,
-        isUsed,
-        alreadyProcessed,
-        decisionResult: record.decisionResult,
-        usedByEmail: record.usedByEmail,
-        conflictError,
-        booking,
-      });
+    const bookings = await db.getAll('bookings');
+    const booking = bookings.find((b) => b.id === record.targetId);
+    if (!booking) {
+      res.status(404).json({ error: 'Associated booking no longer exists.' });
       return;
     }
-
-    const enquiries = await db.getAll('enquiries');
-    const enquiry = enquiries.find((e) => e.id === record.targetId);
-    if (!enquiry) {
-      res.status(404).json({ error: 'Associated enquiry no longer exists.' });
-      return;
+    const alreadyProcessed = isUsed || booking.bookingStatus !== 'Pending';
+    let conflictError: string | null = null;
+    if (!alreadyProcessed && record.action === 'confirm') {
+      const conflict = hasVehicleBookingConflict(
+        bookings,
+        booking.vehicleId,
+        booking.journeyDate,
+        booking.returnDate,
+        booking.journeyTime,
+        booking.tripType,
+        booking.id
+      );
+      if (conflict) {
+        conflictError = `Vehicle already reserved by overlapping booking ${conflict.bookingCode}.`;
+      }
     }
-    const alreadyProcessed = isUsed || enquiry.status !== 'Pending';
     res.json({
-      targetType: 'enquiry',
+      targetType: 'booking',
       action: record.action,
       expiresAt: record.expiresAt,
       isExpired,
@@ -2802,7 +3171,8 @@ async function startServer() {
       alreadyProcessed,
       decisionResult: record.decisionResult,
       usedByEmail: record.usedByEmail,
-      enquiry,
+      conflictError,
+      booking,
     });
   });
 
@@ -2821,9 +3191,9 @@ async function startServer() {
 
     const tokenHash = hashAdminActionToken(rawToken);
     const tokens = await db.getAll('adminActionTokens');
-    const record = tokens.find((t) => t.tokenHash === tokenHash);
+    const record = tokens.find((t) => t.tokenHash === tokenHash && t.targetType === 'booking');
     if (!record) {
-      res.status(404).json({ error: 'Action link was not found.' });
+      res.status(404).json({ error: 'Booking action link was not found.' });
       return;
     }
     if (record.usedAt) {
@@ -2835,126 +3205,78 @@ async function startServer() {
       return;
     }
 
-    const lockKey = `${record.targetType}:${record.targetId}`;
+    const lockKey = `booking:${record.targetId}`;
     if (inFlightActionDecisions.has(lockKey)) {
-      res.status(409).json({ error: 'Another decision for this record is already in progress.' });
+      res.status(409).json({ error: 'Another decision for this booking is already in progress.' });
       return;
     }
     inFlightActionDecisions.add(lockKey);
 
     try {
-      if (record.targetType === 'booking') {
-        const bookings = await db.getAll('bookings');
-        const booking = bookings.find((b) => b.id === record.targetId);
-        if (!booking) {
-          res.status(404).json({ error: 'Booking not found.' });
-          return;
-        }
-        if (booking.bookingStatus !== 'Pending') {
-          await db.consumeAdminActionTokensForTarget('booking', booking.id, {
-            usedByEmail: req.user?.email,
-            usedByRole: req.user?.role,
-            decisionResult: `already:${booking.bookingStatus}`,
-          });
-          res.status(409).json({
-            error: `Booking #${booking.bookingCode} is already ${booking.bookingStatus}. Duplicate approvals/rejections are blocked.`,
-          });
-          return;
-        }
-
-        const nextStatus: BookingStatus = record.action === 'confirm' ? 'Confirmed' : 'Rejected';
-        if (nextStatus === 'Confirmed') {
-          const conflict = hasVehicleBookingConflict(
-            bookings,
-            booking.vehicleId,
-            booking.journeyDate,
-            booking.returnDate,
-            booking.journeyTime,
-            booking.tripType,
-            booking.id
-          );
-          if (conflict) {
-            res.status(409).json({
-              error: `Cannot confirm booking: vehicle overlaps with ${conflict.bookingCode}.`,
-            });
-            return;
-          }
-        }
-
-        const updatedBooking = await db.updateOneById('bookings', booking.id, {
-          bookingStatus: nextStatus,
-          updatedAt: new Date().toISOString(),
-        });
-
+      const bookings = await db.getAll('bookings');
+      const booking = bookings.find((b) => b.id === record.targetId);
+      if (!booking) {
+        res.status(404).json({ error: 'Booking not found.' });
+        return;
+      }
+      if (booking.bookingStatus !== 'Pending') {
         await db.consumeAdminActionTokensForTarget('booking', booking.id, {
           usedByEmail: req.user?.email,
           usedByRole: req.user?.role,
-          decisionResult: `email-action:${nextStatus}`,
-        });
-
-        const emailStatus = await runEmailSafely(
-          dispatchBookingStatusEmail(booking.id, nextStatus, {
-            notifyAdminWithInvoice: nextStatus === 'Confirmed',
-          })
-        );
-
-        res.json({
-          executed: true,
-          targetType: 'booking',
-          action: record.action,
-          booking: updatedBooking,
-          emailStatus,
-          message:
-            nextStatus === 'Confirmed'
-              ? `Booking #${booking.bookingCode} confirmed. Status update and PDF invoice dispatched.`
-              : `Booking #${booking.bookingCode} rejected. Status update email dispatched to customer.`,
-        });
-        return;
-      }
-
-      // Enquiry action execution
-      const enquiries = await db.getAll('enquiries');
-      const enquiry = enquiries.find((e) => e.id === record.targetId);
-      if (!enquiry) {
-        res.status(404).json({ error: 'Enquiry not found.' });
-        return;
-      }
-      if (enquiry.status !== 'Pending') {
-        await db.consumeAdminActionTokensForTarget('enquiry', enquiry.id, {
-          usedByEmail: req.user?.email,
-          usedByRole: req.user?.role,
-          decisionResult: `already:${enquiry.status}`,
+          decisionResult: `already:${booking.bookingStatus}`,
         });
         res.status(409).json({
-          error: `Enquiry is already marked as ${enquiry.status}. Duplicate actions are blocked.`,
+          error: `Booking #${booking.bookingCode} is already ${booking.bookingStatus}. Duplicate approvals/rejections are blocked.`,
         });
         return;
       }
 
-      const nextStatus: Enquiry['status'] = record.action === 'confirm' ? 'Confirmed' : 'Rejected';
-      const updatedEnquiry = await db.updateOneById('enquiries', enquiry.id, {
-        status: nextStatus,
+      const nextStatus: BookingStatus = record.action === 'confirm' ? 'Confirmed' : 'Rejected';
+      if (nextStatus === 'Confirmed') {
+        const conflict = hasVehicleBookingConflict(
+          bookings,
+          booking.vehicleId,
+          booking.journeyDate,
+          booking.returnDate,
+          booking.journeyTime,
+          booking.tripType,
+          booking.id
+        );
+        if (conflict) {
+          res.status(409).json({
+            error: `Cannot confirm booking: vehicle overlaps with ${conflict.bookingCode}.`,
+          });
+          return;
+        }
+      }
+
+      const updatedBooking = await db.updateOneById('bookings', booking.id, {
+        bookingStatus: nextStatus,
         updatedAt: new Date().toISOString(),
       });
 
-      await db.consumeAdminActionTokensForTarget('enquiry', enquiry.id, {
+      await db.consumeAdminActionTokensForTarget('booking', booking.id, {
         usedByEmail: req.user?.email,
         usedByRole: req.user?.role,
         decisionResult: `email-action:${nextStatus}`,
       });
 
-      const emailStatus = await runEmailSafely(dispatchEnquiryStatusEmail(enquiry.id, nextStatus));
+      const emailStatus = await runEmailSafely(
+        dispatchBookingStatusEmail(booking.id, nextStatus, {
+          notifyAdminWithInvoice: nextStatus === 'Confirmed',
+        })
+      );
 
       res.json({
         executed: true,
-        targetType: 'enquiry',
+        targetType: 'booking',
         action: record.action,
-        enquiry: updatedEnquiry,
+        booking: updatedBooking,
         emailStatus,
         message:
           nextStatus === 'Confirmed'
-            ? `Enquiry confirmed and customer notification sent.`
-            : `Enquiry rejected and customer notification sent.`,
+            ? `Booking #${booking.bookingCode} confirmed. Status update and PDF invoice dispatched.`
+            : `Booking #${booking.bookingCode} rejected. Status update email dispatched to customer.`,
       });
     } finally {
       inFlightActionDecisions.delete(lockKey);

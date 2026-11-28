@@ -1,4 +1,5 @@
 import React from 'react';
+import { Mail, MapPin, Phone } from 'lucide-react';
 import { WebsiteSettings } from '../types';
 import { ActivePage } from './Header';
 import { SocialMediaSymbols } from './SocialMediaSymbols';
@@ -21,112 +22,195 @@ export const Footer: React.FC<FooterProps> = ({ settings, onNavigate }) => {
   const address = settings?.businessAddress || 'Dwaraka Nagar Main Road, Visakhapatnam, AP 530016';
   const hours = settings?.workingHours || '24/7 Dispatch Desk';
 
+  const cleanTel = phone.replace(/[^+\d]/g, '');
+  const telHref = cleanTel.length >= 6 ? `tel:${cleanTel}` : undefined;
+  const mailHref = email.includes('@') ? `mailto:${email}` : undefined;
+
   return (
     <footer className="bg-[#102A43] text-slate-300 border-t border-slate-800">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-14">
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-10">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-9 pb-10 md:py-14">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-7 md:gap-10">
+          {/* Brand Summary */}
           <div>
-            <div className="flex items-center gap-3.5">
+            <div className="flex items-center gap-3">
               <img
                 src={logoUrl}
                 alt={`${companyName} logo`}
                 referrerPolicy="no-referrer"
-                className="h-16 w-16 object-contain bg-white rounded-xl p-1 ring-2 ring-[#F59E0B]/40 shadow-md shrink-0"
+                className="h-12 w-12 md:h-16 md:w-16 object-contain bg-white rounded-xl p-1 ring-2 ring-[#F59E0B]/40 shadow-md shrink-0"
               />
-              <p className="text-xl font-extrabold text-white tracking-tight">
-                {(() => {
-                  const match = /^(.*?)(\bJagan\b)(.*)$/i.exec(companyName);
-                  if (!match) return companyName;
-                  return (
-                    <>
-                      {match[1]}
-                      <span className="text-[#F59E0B]">{match[2]}</span>
-                      {match[3]}
-                    </>
-                  );
-                })()}
-              </p>
+              <div className="min-w-0">
+                <p className="text-lg md:text-xl font-extrabold text-white tracking-tight leading-snug">
+                  {(() => {
+                    const match = /^(.*?)(\bJagan\b)(.*)$/i.exec(companyName);
+                    if (!match) return companyName;
+                    return (
+                      <>
+                        {match[1]}
+                        <span className="text-[#F59E0B]">{match[2]}</span>
+                        {match[3]}
+                      </>
+                    );
+                  })()}
+                </p>
+                <p className="text-[11px] text-slate-400 mt-0.5 md:hidden">{permitsLine}</p>
+              </div>
             </div>
-            <p className="text-sm text-slate-300 mt-3.5 leading-relaxed">{footerDesc}</p>
-            <p className="text-xs text-slate-400 mt-4">{permitsLine}</p>
-            <div className="mt-5">
+            <p className="text-xs sm:text-sm text-slate-300 mt-3 md:mt-3.5 leading-relaxed">
+              {footerDesc}
+            </p>
+            <p className="hidden md:block text-xs text-slate-400 mt-4">{permitsLine}</p>
+            <div className="mt-4 md:mt-5">
               <SocialMediaSymbols settings={settings} variant="dark" showTitle />
             </div>
           </div>
 
-          <div>
-            <p className="text-sm font-semibold text-white mb-4">Our Fleet</p>
-            <ul className="space-y-2.5 text-sm">
-              <li>
-                <button type="button" onClick={() => onNavigate('fleet')} className="hover:text-white transition-colors">
-                  Our Vehicles Directory
-                </button>
-              </li>
-              <li>
-                <button type="button" onClick={() => onNavigate('packages')} className="hover:text-white transition-colors">
-                  Tour & Travel Packages
-                </button>
-              </li>
-              <li>
-                <button type="button" onClick={() => onNavigate('services')} className="hover:text-white transition-colors">
-                  Transportation Services
-                </button>
-              </li>
-              <li>
-                <button type="button" onClick={() => onNavigate('booking')} className="hover:text-white transition-colors">
-                  Book a Vehicle Online
-                </button>
-              </li>
-            </ul>
+          {/* Mobile 2-Column Nav Wrapper (expands cleanly into Grid Columns 2 & 3 on md+) */}
+          <div className="grid grid-cols-2 gap-6 py-5 border-y border-slate-800/90 md:contents md:border-0 md:py-0">
+            <div>
+              <p className="text-xs md:text-sm font-semibold text-white mb-2.5 md:mb-4">Our Fleet</p>
+              <ul className="space-y-1 md:space-y-2.5 text-[13px] md:text-sm">
+                <li>
+                  <button
+                    type="button"
+                    onClick={() => onNavigate('fleet')}
+                    className="w-full text-left py-1.5 md:py-0 hover:text-white transition-colors cursor-pointer"
+                  >
+                    Our Vehicles Directory
+                  </button>
+                </li>
+                <li>
+                  <button
+                    type="button"
+                    onClick={() => onNavigate('packages')}
+                    className="w-full text-left py-1.5 md:py-0 hover:text-white transition-colors cursor-pointer"
+                  >
+                    Tour &amp; Travel Packages
+                  </button>
+                </li>
+                <li>
+                  <button
+                    type="button"
+                    onClick={() => onNavigate('services')}
+                    className="w-full text-left py-1.5 md:py-0 hover:text-white transition-colors cursor-pointer"
+                  >
+                    Transportation Services
+                  </button>
+                </li>
+                <li>
+                  <button
+                    type="button"
+                    onClick={() => onNavigate('booking')}
+                    className="w-full text-left py-1.5 md:py-0 hover:text-white transition-colors cursor-pointer"
+                  >
+                    Book a Vehicle Online
+                  </button>
+                </li>
+              </ul>
+            </div>
+
+            <div>
+              <p className="text-xs md:text-sm font-semibold text-white mb-2.5 md:mb-4">
+                Portals &amp; Support
+              </p>
+              <ul className="space-y-1 md:space-y-2.5 text-[13px] md:text-sm">
+                <li>
+                  <button
+                    type="button"
+                    onClick={() => onNavigate('customer')}
+                    className="w-full text-left py-1.5 md:py-0 hover:text-white transition-colors cursor-pointer"
+                  >
+                    Customer Trip Dashboard
+                  </button>
+                </li>
+                <li>
+                  <button
+                    type="button"
+                    onClick={() => onNavigate('login')}
+                    className="w-full text-left py-1.5 md:py-0 hover:text-white transition-colors cursor-pointer"
+                  >
+                    Sign In / Track Booking
+                  </button>
+                </li>
+                <li>
+                  <button
+                    type="button"
+                    onClick={() => onNavigate('services')}
+                    className="w-full text-left py-1.5 md:py-0 hover:text-white transition-colors cursor-pointer"
+                  >
+                    All &amp; Upcoming Services
+                  </button>
+                </li>
+                <li>
+                  <button
+                    type="button"
+                    onClick={() => onNavigate('destinations')}
+                    className="w-full text-left py-1.5 md:py-0 hover:text-white transition-colors cursor-pointer"
+                  >
+                    Featured Destinations
+                  </button>
+                </li>
+                <li>
+                  <button
+                    type="button"
+                    onClick={() => onNavigate('gallery')}
+                    className="w-full text-left py-1.5 md:py-0 hover:text-white transition-colors cursor-pointer"
+                  >
+                    Fleet Photo Gallery
+                  </button>
+                </li>
+                <li>
+                  <button
+                    type="button"
+                    onClick={() => onNavigate('home', 'contact')}
+                    className="w-full text-left py-1.5 md:py-0 hover:text-white transition-colors cursor-pointer"
+                  >
+                    Request Custom Quote
+                  </button>
+                </li>
+              </ul>
+            </div>
           </div>
 
-          <div>
-            <p className="text-sm font-semibold text-white mb-4">Portals & Support</p>
-            <ul className="space-y-2.5 text-sm">
+          {/* Dispatch Desk Contact */}
+          <div className="bg-white/[0.04] border border-white/10 rounded-xl p-4 md:bg-transparent md:border-0 md:rounded-none md:p-0">
+            <p className="text-xs md:text-sm font-semibold text-white mb-2 md:mb-4">{hours}</p>
+            <ul className="space-y-1.5 md:space-y-2.5 text-[13px] md:text-sm text-slate-300">
               <li>
-                <button type="button" onClick={() => onNavigate('customer')} className="hover:text-white transition-colors">
-                  Customer Trip Dashboard
-                </button>
+                {telHref ? (
+                  <a
+                    href={telHref}
+                    className="inline-flex items-center gap-2 min-h-[40px] md:min-h-0 text-white md:text-slate-300 hover:text-white font-semibold md:font-normal tabular-nums transition-colors"
+                  >
+                    <Phone className="w-4 h-4 text-[#F59E0B] shrink-0 md:hidden" />
+                    {phone}
+                  </a>
+                ) : (
+                  <span className="tabular-nums">{phone}</span>
+                )}
               </li>
               <li>
-                <button type="button" onClick={() => onNavigate('login')} className="hover:text-white transition-colors">
-                  Sign In / Track Booking
-                </button>
+                {mailHref ? (
+                  <a
+                    href={mailHref}
+                    className="inline-flex items-center gap-2 min-h-[40px] md:min-h-0 break-all hover:text-white transition-colors"
+                  >
+                    <Mail className="w-4 h-4 text-[#F59E0B] shrink-0 md:hidden" />
+                    {email}
+                  </a>
+                ) : (
+                  <span className="break-all">{email}</span>
+                )}
               </li>
-              <li>
-                <button type="button" onClick={() => onNavigate('services')} className="hover:text-white transition-colors">
-                  All & Upcoming Services
-                </button>
+              <li className="flex items-start gap-2 pt-1 md:pt-0 text-xs md:text-sm text-slate-300 leading-relaxed">
+                <MapPin className="w-4 h-4 text-slate-400 shrink-0 mt-0.5 md:hidden" />
+                <span>{address}</span>
               </li>
-              <li>
-                <button type="button" onClick={() => onNavigate('destinations')} className="hover:text-white transition-colors">
-                  Featured Destinations
-                </button>
-              </li>
-              <li>
-                <button type="button" onClick={() => onNavigate('gallery')} className="hover:text-white transition-colors">
-                  Fleet Photo Gallery
-                </button>
-              </li>
-              <li>
-                <button type="button" onClick={() => onNavigate('home', 'contact')} className="hover:text-white transition-colors">
-                  Request Custom Quote
-                </button>
-              </li>
-            </ul>
-          </div>
-
-          <div>
-            <p className="text-sm font-semibold text-white mb-4">{hours}</p>
-            <ul className="space-y-2.5 text-sm text-slate-300">
-              <li className="tabular-nums">{phone}</li>
-              <li>{email}</li>
-              <li>{address}</li>
             </ul>
           </div>
         </div>
 
-        <div className="mt-12 pt-8 border-t border-slate-800 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 text-xs text-slate-400">
+        <div className="mt-7 pt-5 md:mt-12 md:pt-8 border-t border-slate-800 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 sm:gap-4 text-xs text-slate-400 pr-14 sm:pr-0">
           <p>© {new Date().getFullYear()} {companyName}. All rights reserved.</p>
           <p>Transparent owned-fleet operations · Direct booking with no broker markups.</p>
         </div>

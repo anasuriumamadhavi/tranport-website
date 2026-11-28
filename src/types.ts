@@ -160,6 +160,10 @@ export interface Booking {
     lastStatusNotifiedAt?: string;
     lastError?: string;
   };
+  feedbackSubmittedAt?: string;
+  feedbackRating?: number;
+  feedbackTokenHash?: string;
+  feedbackTokenExpiresAt?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -181,6 +185,8 @@ export interface PaymentRecord {
   createdAt: string;
 }
 
+export type EnquiryStatus = 'New' | 'Replied' | 'Closed';
+
 export interface Enquiry {
   id: string;
   name: string;
@@ -190,11 +196,14 @@ export interface Enquiry {
   message: string;
   source: 'Contact Form' | 'WhatsApp' | 'Custom Quote' | 'Support';
   bookingCode?: string;
-  status: 'Pending' | 'Confirmed' | 'Rejected' | 'Responded' | 'Resolved';
+  status: EnquiryStatus;
+  repliedAt?: string;
+  repliedByEmail?: string;
+  lastReplySubject?: string;
+  lastReplyMessage?: string;
   emailNotifications?: {
     adminNotificationSentAt?: string;
-    lastStatusNotified?: 'Pending' | 'Confirmed' | 'Rejected' | 'Responded' | 'Resolved';
-    lastStatusNotifiedAt?: string;
+    lastReplySentAt?: string;
     lastError?: string;
   };
   createdAt: string;
@@ -203,6 +212,8 @@ export interface Enquiry {
 
 export interface Review {
   id: string;
+  bookingId?: string;
+  bookingCode?: string;
   customerName: string;
   roleOrCity: string;
   companyOrTrip: string;

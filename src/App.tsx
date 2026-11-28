@@ -35,6 +35,8 @@ import { BookingPrefill, BookingWizard } from './components/BookingWizard';
 import { CustomerDashboard } from './components/CustomerDashboard';
 import { AdminDashboard } from './components/AdminDashboard';
 import { AdminActionPage } from './components/AdminActionPage';
+import { EnquiryReplyPage } from './components/EnquiryReplyPage';
+import { FeedbackPage } from './components/FeedbackPage';
 import { AuthView } from './components/AuthView';
 import { ServicesPage } from './components/ServicesPage';
 import { GalleryPage } from './components/GalleryPage';
@@ -136,9 +138,9 @@ const SERVICES_LIST: Array<{
   },
 ];
 
-function extractInitialAdminActionToken(): string | null {
+function extractInitialQueryHexToken(paramName: string): string | null {
   try {
-    const raw = new URLSearchParams(window.location.search).get('adminAction')?.trim() || '';
+    const raw = new URLSearchParams(window.location.search).get(paramName)?.trim() || '';
     return /^[a-f0-9]{32,128}$/i.test(raw) ? raw : null;
   } catch {
     return null;
@@ -147,10 +149,22 @@ function extractInitialAdminActionToken(): string | null {
 
 export default function App() {
   const [pendingAdminActionToken, setPendingAdminActionToken] = useState<string | null>(() =>
-    extractInitialAdminActionToken()
+    extractInitialQueryHexToken('adminAction')
+  );
+  const [pendingEnquiryReplyToken, setPendingEnquiryReplyToken] = useState<string | null>(() =>
+    extractInitialQueryHexToken('enquiryReply')
+  );
+  const [pendingFeedbackToken, setPendingFeedbackToken] = useState<string | null>(() =>
+    extractInitialQueryHexToken('feedback')
   );
   const [activePage, setActivePage] = useState<ActivePage>(() =>
-    extractInitialAdminActionToken() ? 'admin-action' : 'home'
+    extractInitialQueryHexToken('adminAction')
+      ? 'admin-action'
+      : extractInitialQueryHexToken('enquiryReply')
+      ? 'enquiry-reply'
+      : extractInitialQueryHexToken('feedback')
+      ? 'feedback'
+      : 'home'
   );
   const [adminPreferredTab, setAdminPreferredTab] = useState<'overview' | 'bookings' | 'enquiries'>('overview');
   const [quotaExceeded, setQuotaExceeded] = useState(false);
@@ -1073,10 +1087,10 @@ export default function App() {
                   </div>
 
                   {/* Customer Reviews */}
-                  <div className="pt-8 border-t border-slate-200">
+                  <div id="reviews" className="pt-8 border-t border-slate-200">
                     <h3 className="text-xl font-bold text-[#102A43] mb-6">Verified Passenger Reviews</h3>
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                      {reviews.slice(0, 3).map((rev, idx) => (
+                      {reviews.slice(0, 6).map((rev, idx) => (
                         <motion.article
                           key={rev.id}
                           initial={{ opacity: 0, y: 10 }}
@@ -1501,6 +1515,10 @@ export default function App() {
               token={token}
               settings={settings}
               onUpdateUser={setUser}
+              onFeedbackSubmitted={(newReview) => {
+                setReviews((prev) => [newReview, ...prev.filter((r) => r.id !== newReview.id)]);
+                void loadPublicData();
+              }}
               onGoToLogin={() => handleNavigate('login')}
               onBookNewTrip={() => handleNavigate('booking')}
             />
@@ -1552,6 +1570,60 @@ export default function App() {
                 }
                 setActivePage('home');
                 window.scrollTo({ top: 0, behavior: 'smooth' });
+              }}
+            />
+          )}
+
+          {/* ENQUIRY REPLY DESK PAGE (FROM ENQUIRY EMAIL) */}
+          {activePage === 'enquiry-reply' && pendingEnquiryReplyToken && (
+            <EnquiryReplyPage
+              replyToken={pendingEnquiryReplyToken}
+              user={user}
+              token={token}
+              onAdminAuthenticated={(newToken, loggedInAdmin) => {
+                setToken(newToken);
+                setUser(loggedInAdmin);
+              }}
+              onLogout={() => {
+                setToken(null);
+                setUser(null);
+              }}
+              onOpenDashboard={() => {
+                setPendingEnquiryReplyToken(null);
+                setAdminPreferredTab('enquiries');
+                if (window.location.search.includes('enquiryReply=')) {
+                  window.history.replaceState({}, '', window.location.pathname);
+                }
+                void loadPublicData();
+                setActivePage(token && user?.role === 'admin' ? 'admin' : 'login');
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }}
+              onExit={() => {
+                setPendingEnquiryReplyToken(null);
+                if (window.location.search.includes('enquiryReply=')) {
+                  window.history.replaceState({}, '', window.location.pathname);
+                }
+                setActivePage('home');
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }}
+            />
+          )}
+
+          {/* COMPLETED SERVICE PASSENGER FEEDBACK PAGE */}
+          {activePage === 'feedback' && pendingFeedbackToken && (
+            <FeedbackPage
+              feedbackToken={pendingFeedbackToken}
+              onFeedbackPublished={(newReview) => {
+                setReviews((prev) => [newReview, ...prev.filter((r) => r.id !== newReview.id)]);
+                void loadPublicData();
+              }}
+              onViewWebsiteReviews={() => {
+                setPendingFeedbackToken(null);
+                if (window.location.search.includes('feedback=')) {
+                  window.history.replaceState({}, '', window.location.pathname);
+                }
+                void loadPublicData();
+                handleNavigate('home', 'reviews');
               }}
             />
           )}

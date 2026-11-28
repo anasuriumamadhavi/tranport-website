@@ -532,44 +532,93 @@ export async function dispatchBookingStatusEmail(
   }
 }
 
+function sanitizeTelHref(phone: string): string | null {
+  const cleaned = phone.replace(/[^+\d]/g, '');
+  return cleaned.length >= 6 ? `tel:${cleaned}` : null;
+}
+
+async function createEnquiryReplyLink(enquiryId: string, baseUrl?: string): Promise<string> {
+  const origin = sanitizeBaseUrl(baseUrl);
+  const now = Date.now();
+  const createdAt = new Date(now).toISOString();
+  const expiresAt = new Date(now + ACTION_LINK_TTL_MS).toISOString();
+  const rawToken = crypto.randomBytes(32).toString('hex');
+
+  const record: AdminActionTokenRecord = {
+    id: `act-${now}-e-${crypto.randomBytes(4).toString('hex')}`,
+    tokenHash: hashAdminActionToken(rawToken),
+    targetType: 'enquiry',
+    targetId: enquiryId,
+    action: 'reply',
+    expiresAt,
+    createdAt,
+  };
+  await db.insertOne('adminActionTokens', record);
+  return `${origin}/?enquiryReply=${rawToken}`;
+}
+
 function buildAdminNewEnquiryHtml(
   enquiry: Enquiry,
   settings: WebsiteSettings | null,
-  actionLinks?: { confirmUrl: string; rejectUrl: string } | null
+  replyUrl: string | null
 ): string {
   const company = settings?.companyName || 'Vizag Jagan Travels';
   const hasRealEmail = Boolean(enquiry.email && enquiry.email !== 'not-provided@vizagjagantravels.com');
+  const telHref = sanitizeTelHref(enquiry.phone || '');
   return `
     <div style="font-family:Arial,Helvetica,sans-serif;max-width:620px;margin:0 auto;background:#ffffff;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;">
-      <div style="background:#102a43;color:#ffffff;padding:20px 24px;">
+      <div style="background:#1e3a8a;color:#ffffff;padding:20px 24px;">
         <h2 style="margin:0;font-size:18px;">New Customer Enquiry · ${escapeHtml(enquiry.subject)}</h2>
-        <p style="margin:5px 0 0;font-size:13px;color:#cbd5e1;">${escapeHtml(company)} Dispatch Alert</p>
+        <p style="margin:5px 0 0;font-size:13px;color:#dbeafe;">${escapeHtml(company)} · General Enquiry Desk</p>
       </div>
       <div style="padding:24px;">
         <p style="margin:0 0 12px;font-size:14px;color:#334155;">
-          A customer has submitted a new enquiry via <strong>${escapeHtml(enquiry.source)}</strong>.
+          A customer submitted an enquiry via <strong>${escapeHtml(enquiry.source)}</strong>. Review the details below and reply or call directly.
         </p>
         <table style="width:100%;border-collapse:collapse;margin:14px 0;font-size:14px;color:#1e293b;">
-          <tr><td style="padding:8px 0;border-bottom:1px solid #e2e8f0;color:#64748b;">Enquiry ID</td><td style="padding:8px 0;border-bottom:1px solid #e2e8f0;font-weight:700;text-align:right;">${escapeHtml(enquiry.id)}</td></tr>
-          <tr><td style="padding:8px 0;border-bottom:1px solid #e2e8f0;color:#64748b;">Customer</td><td style="padding:8px 0;border-bottom:1px solid #e2e8f0;font-weight:600;text-align:right;">${escapeHtml(enquiry.name)}</td></tr>
-          <tr><td style="padding:8px 0;border-bottom:1px solid #e2e8f0;color:#64748b;">Phone</td><td style="padding:8px 0;border-bottom:1px solid #e2e8f0;text-align:right;">${escapeHtml(enquiry.phone)}</td></tr>
-          <tr><td style="padding:8px 0;border-bottom:1px solid #e2e8f0;color:#64748b;">Email</td><td style="padding:8px 0;border-bottom:1px solid #e2e8f0;text-align:right;">${escapeHtml(hasRealEmail ? enquiry.email : 'Not provided')}</td></tr>
-          ${enquiry.bookingCode ? `<tr><td style="padding:8px 0;border-bottom:1px solid #e2e8f0;color:#64748b;">Booking Ref</td><td style="padding:8px 0;border-bottom:1px solid #e2e8f0;font-weight:700;text-align:right;">${escapeHtml(enquiry.bookingCode)}</td></tr>` : ''}
-          <tr><td style="padding:8px 0;color:#64748b;">Status</td><td style="padding:8px 0;font-weight:700;color:#102a43;text-align:right;">${escapeHtml(enquiry.status)}</td></tr>
+          <tr><td style="padding:8px 0;border-bottom:1px solid #e2e8f0;color:#64748b;">Customer Name</td><td style="padding:8px 0;border-bottom:1px solid #e2e8f0;font-weight:700;text-align:right;">${escapeHtml(enquiry.name)}</td></tr>
+          <tr><td style="padding:8px 0;border-bottom:1px solid #e2e8f0;color:#64748b;">Phone Number</td><td style="padding:8px 0;border-bottom:1px solid #e2e8f0;font-weight:700;text-align:right;">${escapeHtml(enquiry.phone)}</td></tr>
+          <tr><td style="padding:8px 0;border-bottom:1px solid #e2e8f0;color:#64748b;">Customer Email</td><td style="padding:8px 0;border-bottom:1px solid #e2e8f0;text-align:right;">${escapeHtml(hasRealEmail ? enquiry.email : 'Not provided')}</td></tr>
+          <tr><td style="padding:8px 0;border-bottom:1px solid #e2e8f0;color:#64748b;">Enquiry Subject</td><td style="padding:8px 0;border-bottom:1px solid #e2e8f0;font-weight:600;text-align:right;">${escapeHtml(enquiry.subject)}</td></tr>
+          ${enquiry.bookingCode ? `<tr><td style="padding:8px 0;border-bottom:1px solid #e2e8f0;color:#64748b;">Ref Code</td><td style="padding:8px 0;border-bottom:1px solid #e2e8f0;font-weight:700;text-align:right;">${escapeHtml(enquiry.bookingCode)}</td></tr>` : ''}
+          <tr><td style="padding:8px 0;color:#64748b;">Status</td><td style="padding:8px 0;font-weight:700;color:#1e3a8a;text-align:right;">${escapeHtml(enquiry.status)}</td></tr>
         </table>
-        <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px 14px;margin:14px 0;font-size:13px;color:#1e293b;line-height:1.5;">
-          <strong>Message:</strong><br/>${escapeHtml(enquiry.message)}
+        <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px 14px;margin:14px 0;font-size:13px;color:#1e293b;line-height:1.55;">
+          <strong>Customer Message:</strong><br/>${escapeHtml(enquiry.message)}
         </div>
-        ${
-          actionLinks
-            ? buildActionButtonsHtml({
-                confirmUrl: actionLinks.confirmUrl,
-                rejectUrl: actionLinks.rejectUrl,
-                confirmLabel: 'Confirm Enquiry',
-                rejectLabel: 'Reject Enquiry',
-              })
-            : ''
-        }
+        <div style="margin:20px 0 8px;padding:16px;background:#f8fafc;border:1px solid #cbd5e1;border-radius:8px;">
+          <p style="margin:0 0 12px;font-size:13px;font-weight:700;color:#102a43;">
+            Enquiry Response Actions
+          </p>
+          <table role="presentation" cellspacing="0" cellpadding="0" border="0" style="border-collapse:separate;">
+            <tr>
+              ${
+                replyUrl
+                  ? `<td bgcolor="#2563EB" style="border-radius:6px;background-color:#2563EB;">
+                      <a href="${escapeHtml(replyUrl)}" target="_blank" rel="noopener noreferrer"
+                         style="display:inline-block;padding:12px 20px;font-family:Arial,Helvetica,sans-serif;font-size:14px;font-weight:700;color:#ffffff;text-decoration:none;border-radius:6px;background-color:#2563EB;">
+                        Reply to Customer
+                      </a>
+                    </td>
+                    <td width="12" style="width:12px;">&nbsp;</td>`
+                  : ''
+              }
+              ${
+                telHref
+                  ? `<td bgcolor="#047857" style="border-radius:6px;background-color:#047857;">
+                      <a href="${escapeHtml(telHref)}"
+                         style="display:inline-block;padding:12px 20px;font-family:Arial,Helvetica,sans-serif;font-size:14px;font-weight:700;color:#ffffff;text-decoration:none;border-radius:6px;background-color:#047857;">
+                        Call Customer (${escapeHtml(enquiry.phone)})
+                      </a>
+                    </td>`
+                  : ''
+              }
+            </tr>
+          </table>
+          <p style="margin:10px 0 0;font-size:11px;color:#64748b;">
+            Clicking Reply to Customer opens the verified Admin Email Reply form (48-hour link).
+          </p>
+        </div>
       </div>
     </div>
   `;
@@ -610,16 +659,13 @@ export async function dispatchNewEnquiryAdminEmail(
       return { sent: false, error: msg };
     }
 
-    const actionLinks =
-      enquiry.status === 'Pending'
-        ? await createActionLinksForTarget('enquiry', enquiry.id, baseUrl)
-        : null;
+    const replyUrl = await createEnquiryReplyLink(enquiry.id, baseUrl);
     const fromEmail = resolveFromEmail(settings);
     const result = await resend.emails.send({
       from: fromEmail,
       to: [adminEmail],
-      subject: `New Enquiry (${enquiry.source}) · ${enquiry.name} · ${enquiry.subject}`,
-      html: buildAdminNewEnquiryHtml(enquiry, settings, actionLinks),
+      subject: `New Enquiry · ${enquiry.name} · ${enquiry.subject}`,
+      html: buildAdminNewEnquiryHtml(enquiry, settings, replyUrl),
     });
 
     const nowIso = new Date().toISOString();
@@ -646,71 +692,59 @@ export async function dispatchNewEnquiryAdminEmail(
   }
 }
 
-export async function dispatchEnquiryStatusEmail(
-  enquiryId: string,
-  newStatus: Enquiry['status']
-): Promise<{ sent: boolean; skipped?: boolean; error?: string }> {
-  const lockKey = `enq-status:${enquiryId}:${newStatus}`;
+export async function sendEnquiryReplyEmail(params: {
+  enquiryId: string;
+  subject: string;
+  replyMessage: string;
+  adminEmail?: string;
+}): Promise<{ sent: boolean; enquiry?: Enquiry | null; error?: string }> {
+  const lockKey = `enq-reply:${params.enquiryId}`;
   if (inFlightNotifications.has(lockKey)) {
-    return { sent: false, skipped: true };
+    return { sent: false, error: 'A reply for this enquiry is already being sent.' };
   }
   inFlightNotifications.add(lockKey);
 
   try {
     const [enquiries, settings] = await Promise.all([db.getAll('enquiries'), db.getSettings()]);
-    const enquiry = enquiries.find((e) => e.id === enquiryId);
-    if (
-      !enquiry ||
-      !enquiry.email?.includes('@') ||
-      enquiry.email === 'not-provided@vizagjagantravels.com'
-    ) {
-      return { sent: false, skipped: true };
+    const enquiry = enquiries.find((e) => e.id === params.enquiryId);
+    if (!enquiry) {
+      return { sent: false, error: 'Enquiry not found.' };
     }
-
-    const prevMeta = enquiry.emailNotifications || {};
-    if (prevMeta.lastStatusNotified === newStatus) {
-      return { sent: false, skipped: true };
+    if (!enquiry.email?.includes('@') || enquiry.email === 'not-provided@vizagjagantravels.com') {
+      return {
+        sent: false,
+        error: 'This customer did not provide a valid email address. Use Call Customer instead.',
+      };
     }
 
     const resend = getResendClient();
     if (!resend) {
-      const msg = 'RESEND_API_KEY is not configured in server environment';
-      return { sent: false, error: msg };
+      return { sent: false, error: 'RESEND_API_KEY is not configured in server environment.' };
     }
 
     const company = settings.companyName || 'Vizag Jagan Travels';
     const supportPhone = settings.supportPhone || '+91 891 274 8800';
     const supportEmail = settings.supportEmail || DEFAULT_ADMIN_EMAIL;
-    const isConfirmed = newStatus === 'Confirmed' || newStatus === 'Resolved';
-    const isRejected = newStatus === 'Rejected';
-    const accentColor = isConfirmed ? '#047857' : isRejected ? '#b91c1c' : '#1d4ed8';
-    const headline = isConfirmed
-      ? `Your Travel Enquiry Has Been ${newStatus}`
-      : isRejected
-      ? `Update on Your Travel Enquiry: ${newStatus}`
-      : `Enquiry Status Updated: ${newStatus}`;
-    const bodyCopy = isConfirmed
-      ? `Good news! Our dispatch team has reviewed and confirmed your enquiry (${enquiry.subject}). A coordinator will follow up with final trip arrangements shortly.`
-      : isRejected
-      ? `Thank you for contacting ${company}. Unfortunately, we are unable to fulfill your enquiry (${enquiry.subject}) as submitted. Please call our dispatch desk for alternative fleet options.`
-      : `Your enquiry (${enquiry.subject}) status has been updated to ${newStatus}.`;
+    const replySubject = params.subject.trim() || `Re: ${enquiry.subject}`;
+    const safeReplyHtml = escapeHtml(params.replyMessage).replace(/\r?\n/g, '<br/>');
 
     const html = `
       <div style="font-family:Arial,Helvetica,sans-serif;max-width:600px;margin:0 auto;background:#ffffff;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;">
-        <div style="background:${accentColor};color:#ffffff;padding:20px 24px;">
-          <h2 style="margin:0;font-size:19px;">${escapeHtml(headline)}</h2>
-          <p style="margin:5px 0 0;font-size:13px;color:#f1f5f9;">${escapeHtml(company)}</p>
+        <div style="background:#102a43;color:#ffffff;padding:20px 24px;">
+          <h2 style="margin:0;font-size:18px;">${escapeHtml(company)}</h2>
+          <p style="margin:5px 0 0;font-size:13px;color:#cbd5e1;">Response to Your Travel Enquiry</p>
         </div>
         <div style="padding:24px;">
           <p style="margin:0 0 12px;font-size:15px;color:#0f172a;">Dear <strong>${escapeHtml(enquiry.name)}</strong>,</p>
-          <p style="margin:0 0 14px;font-size:14px;line-height:1.6;color:#334155;">${escapeHtml(bodyCopy)}</p>
-          <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px 14px;font-size:13px;color:#1e293b;">
-            <div><strong>Enquiry ID:</strong> ${escapeHtml(enquiry.id)}</div>
-            <div><strong>Subject:</strong> ${escapeHtml(enquiry.subject)}</div>
-            <div><strong>Status:</strong> ${escapeHtml(newStatus)}</div>
+          <div style="margin:0 0 18px;font-size:14px;line-height:1.65;color:#1e293b;">
+            ${safeReplyHtml}
+          </div>
+          <div style="background:#f8fafc;border-left:3px solid #2563EB;padding:12px 14px;margin:16px 0;font-size:12px;color:#475569;">
+            <div style="font-weight:700;color:#102a43;margin-bottom:4px;">Your Original Enquiry (${escapeHtml(enquiry.subject)}):</div>
+            <div>${escapeHtml(enquiry.message)}</div>
           </div>
           <p style="margin:16px 0 0;font-size:13px;color:#475569;">
-            Questions? Call <strong>${escapeHtml(supportPhone)}</strong> or email <strong>${escapeHtml(supportEmail)}</strong>.
+            Need immediate assistance? Call our 24/7 dispatch desk at <strong>${escapeHtml(supportPhone)}</strong> or reply to <strong>${escapeHtml(supportEmail)}</strong>.
           </p>
         </div>
       </div>
@@ -719,10 +753,12 @@ export async function dispatchEnquiryStatusEmail(
     const result = await resend.emails.send({
       from: resolveFromEmail(settings),
       to: [enquiry.email],
-      subject: `Enquiry ${newStatus} · ${enquiry.subject} · ${company}`,
+      replyTo: supportEmail,
+      subject: replySubject,
       html,
     });
 
+    const prevMeta = enquiry.emailNotifications || {};
     if (result.error) {
       await db.updateOneById('enquiries', enquiry.id, {
         emailNotifications: { ...prevMeta, lastError: result.error.message },
@@ -731,17 +767,23 @@ export async function dispatchEnquiryStatusEmail(
     }
 
     const nowIso = new Date().toISOString();
-    await db.updateOneById('enquiries', enquiry.id, {
+    const updated = await db.updateOneById('enquiries', enquiry.id, {
+      status: 'Replied',
+      repliedAt: nowIso,
+      repliedByEmail: params.adminEmail,
+      lastReplySubject: replySubject,
+      lastReplyMessage: params.replyMessage.trim().slice(0, 2000),
       emailNotifications: {
         ...prevMeta,
-        lastStatusNotified: newStatus,
-        lastStatusNotifiedAt: nowIso,
+        lastReplySentAt: nowIso,
         lastError: undefined,
       },
+      updatedAt: nowIso,
     });
-    return { sent: true };
+
+    return { sent: true, enquiry: updated };
   } catch (err) {
-    console.warn(`[Email] dispatchEnquiryStatusEmail exception:`, (err as Error).message);
+    console.warn('[Email] sendEnquiryReplyEmail exception:', (err as Error).message);
     return { sent: false, error: (err as Error).message };
   } finally {
     inFlightNotifications.delete(lockKey);
@@ -803,3 +845,114 @@ export async function sendPasswordResetOtpEmail(params: {
     return { sent: false, error: (err as Error).message };
   }
 }
+
+export async function dispatchBookingCompletedFeedbackEmail(
+  bookingId: string,
+  baseUrl?: string
+): Promise<{ sent: boolean; skipped?: boolean; error?: string }> {
+  const lockKey = `completed-feedback:${bookingId}`;
+  if (inFlightNotifications.has(lockKey)) {
+    return { sent: false, skipped: true };
+  }
+  inFlightNotifications.add(lockKey);
+
+  try {
+    const [bookings, settings] = await Promise.all([db.getAll('bookings'), db.getSettings()]);
+    const booking = bookings.find((b) => b.id === bookingId);
+    if (
+      !booking ||
+      booking.bookingStatus !== 'Completed' ||
+      booking.feedbackSubmittedAt ||
+      !booking.customerEmail?.includes('@')
+    ) {
+      return { sent: false, skipped: true };
+    }
+
+    const prevMeta = booking.emailNotifications || {};
+    if (prevMeta.lastStatusNotified === 'Completed') {
+      return { sent: false, skipped: true };
+    }
+
+    const rawToken = crypto.randomBytes(32).toString('hex');
+    const feedbackTokenHash = hashAdminActionToken(rawToken);
+    const feedbackTokenExpiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+    const origin = sanitizeBaseUrl(baseUrl);
+    const feedbackUrl = `${origin}/?feedback=${rawToken}`;
+
+    await db.updateOneById('bookings', booking.id, {
+      feedbackTokenHash,
+      feedbackTokenExpiresAt,
+    });
+
+    const resend = getResendClient();
+    if (!resend) {
+      return { sent: false, error: 'RESEND_API_KEY is not configured in server environment' };
+    }
+
+    const company = settings.companyName || 'Vizag Jagan Travels';
+    const supportPhone = settings.supportPhone || '+91 891 274 8800';
+    const pdf = generateBookingInvoicePdfBuffer(booking, settings);
+
+    const html = `
+      <div style="font-family:Arial,Helvetica,sans-serif;max-width:620px;margin:0 auto;background:#ffffff;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;">
+        <div style="background:#102a43;color:#ffffff;padding:22px 24px;">
+          <h2 style="margin:0;font-size:19px;">Thank You for Travelling with ${escapeHtml(company)}</h2>
+          <p style="margin:5px 0 0;font-size:13px;color:#cbd5e1;">Trip Completed · Booking #${escapeHtml(booking.bookingCode)}</p>
+        </div>
+        <div style="padding:24px;">
+          <p style="margin:0 0 12px;font-size:15px;color:#0f172a;">Dear <strong>${escapeHtml(booking.customerName)}</strong>,</p>
+          <p style="margin:0 0 14px;font-size:14px;line-height:1.6;color:#334155;">
+            Your trip in <strong>${escapeHtml(booking.vehicleName)}</strong> (${escapeHtml(booking.pickupLocation)} &rarr; ${escapeHtml(booking.dropLocation)}) has been marked <strong>Completed</strong>. We would love to hear how your journey went—your verified review publishes directly to our website!
+          </p>
+          <table role="presentation" cellspacing="0" cellpadding="0" border="0" style="margin:20px 0;">
+            <tr>
+              <td bgcolor="#2563EB" style="border-radius:6px;background-color:#2563EB;">
+                <a href="${escapeHtml(feedbackUrl)}" target="_blank" rel="noopener noreferrer"
+                   style="display:inline-block;padding:13px 24px;font-family:Arial,Helvetica,sans-serif;font-size:14px;font-weight:700;color:#ffffff;text-decoration:none;border-radius:6px;background-color:#2563EB;">
+                  Rate &amp; Review Your Trip
+                </a>
+              </td>
+            </tr>
+          </table>
+          <p style="margin:0 0 14px;font-size:12px;color:#64748b;">
+            Your final trip PDF invoice is also attached for your records. Need anything else? Call <strong>${escapeHtml(supportPhone)}</strong>.
+          </p>
+        </div>
+      </div>
+    `;
+
+    const result = await resend.emails.send({
+      from: resolveFromEmail(settings),
+      to: [booking.customerEmail],
+      subject: `Trip Completed · Share Feedback for #${booking.bookingCode} · ${company}`,
+      html,
+      attachments: [{ filename: pdf.filename, content: pdf.content }],
+    });
+
+    if (result.error) {
+      await db.updateOneById('bookings', booking.id, {
+        emailNotifications: { ...prevMeta, lastError: result.error.message },
+      });
+      return { sent: false, error: result.error.message };
+    }
+
+    const nowIso = new Date().toISOString();
+    await db.updateOneById('bookings', booking.id, {
+      emailNotifications: {
+        ...prevMeta,
+        invoiceGeneratedAt: prevMeta.invoiceGeneratedAt || nowIso,
+        lastStatusNotified: 'Completed',
+        lastStatusNotifiedAt: nowIso,
+        lastError: undefined,
+      },
+    });
+
+    return { sent: true };
+  } catch (err) {
+    console.warn('[Email] dispatchBookingCompletedFeedbackEmail error:', (err as Error).message);
+    return { sent: false, error: (err as Error).message };
+  } finally {
+    inFlightNotifications.delete(lockKey);
+  }
+}
+

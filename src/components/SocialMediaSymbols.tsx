@@ -108,7 +108,7 @@ export const SocialMediaSymbols: React.FC<SocialMediaSymbolsProps> = ({
             rel="noopener noreferrer"
             title={`Visit ${item.name}`}
             aria-label={`Open ${item.name} in a new tab`}
-            className={`w-10 h-10 rounded-lg border flex items-center justify-center transition-all duration-150 hover:-translate-y-0.5 active:scale-95 ${baseButtonClass} ${item.hoverClass}`}
+            className={`w-11 h-11 sm:w-10 sm:h-10 rounded-lg border flex items-center justify-center transition-all duration-150 hover:-translate-y-0.5 active:scale-95 ${baseButtonClass} ${item.hoverClass}`}
           >
             {item.icon}
           </a>

@@ -42,7 +42,7 @@ export interface AdminActionTokenRecord {
   tokenHash: string;
   targetType: 'booking' | 'enquiry';
   targetId: string;
-  action: 'confirm' | 'reject';
+  action: 'confirm' | 'reject' | 'reply';
   expiresAt: string;
   usedAt?: string;
   usedByEmail?: string;
@@ -660,7 +660,7 @@ const SEED_ENQUIRIES: Enquiry[] = [
     subject: 'Monthly Corporate Shuttle Contract (2 Mini Buses)',
     message: 'Looking for two 24-seater AC mini buses for daily employee shuttle between Madhurawada IT SEZ and Dwaraka Nagar.',
     source: 'Contact Form',
-    status: 'Pending',
+    status: 'New',
     createdAt: '2026-11-24T10:15:00.000Z',
   },
 ];
