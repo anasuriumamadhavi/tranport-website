@@ -1598,6 +1598,17 @@ class HybridDatabase {
             },
           }
         );
+        const adminResetMarker = await this.mongoDb
+          .collection('settings')
+          .findOne({ id: '__migration_admin_reset_v1' });
+        if (!adminResetMarker) {
+          await this.mongoDb.collection('adminCredentials').deleteMany({});
+          await this.mongoDb.collection('settings').updateOne(
+            { id: '__migration_admin_reset_v1' },
+            { $set: { id: '__migration_admin_reset_v1', doneAt: new Date().toISOString() } },
+            { upsert: true }
+          );
+        }
         return;
       } catch (err) {
         console.warn('MongoDB connection failed, falling back to durable local store:', (err as Error).message);
@@ -1611,6 +1622,7 @@ class HybridDatabase {
     }
     if (!fs.existsSync(DB_FILE)) {
       this.localCache = createDefaultDb();
+      (this.localCache as unknown as { __adminResetV1?: boolean }).__adminResetV1 = true;
       this.flushLocal();
     } else {
       const raw = fs.readFileSync(DB_FILE, 'utf-8');
@@ -1630,6 +1642,13 @@ class HybridDatabase {
       }
       if (!Array.isArray(this.localCache.packages) || this.localCache.packages.length === 0) {
         this.localCache.packages = structuredClone(SEED_PACKAGES);
+        dirty = true;
+      }
+      if (!(this.localCache as unknown as { __adminResetV1?: boolean }).__adminResetV1) {
+        if (Array.isArray(this.localCache.adminCredentials) && this.localCache.adminCredentials.length > 0) {
+          this.localCache.adminCredentials = [];
+        }
+        (this.localCache as unknown as { __adminResetV1?: boolean }).__adminResetV1 = true;
         dirty = true;
       }
       if (Array.isArray(this.localCache.adminCredentials)) {
